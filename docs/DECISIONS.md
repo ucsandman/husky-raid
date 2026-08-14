@@ -22,6 +22,8 @@ Hit registration uses current server-side positions, not a rewound history of wh
 
 The sim ticks at a fixed 30Hz (`TICK_RATE`/`TICK_DT` in `shared/src/constants.ts`) for deterministic physics, but snapshots broadcast at 20Hz via a drift-free elapsed-sim-time accumulator (`HostedMatch.tickOnce` in `server/src/match.ts`), not "every Nth tick" -- 30 and 20 don't divide evenly, and an accumulator avoids cadence drift. Cuts outbound bandwidth ~33% versus broadcasting every tick; client-side interpolation absorbs the gap.
 
+**Known limitation / follow-up (2026-08-14):** on Windows under load, Node's plain `setInterval` for the tick loop suffers timer coalescing, yielding an effective wall-clock snapshot cadence of ~14/s instead of the nominal 20/s (measured 3x independently, reproduced by a second reviewer). Sim correctness is unaffected (fixed-timestep sim time is still exact), but real-time pacing suffers. Follow-up: replace the tick loop with a self-correcting scheduler in `HostedMatch` (`setTimeout`-based drift compensation instead of bare `setInterval`).
+
 ## 2026-08-14: Dijkstra over A* for bot navigation
 
 Bot pathfinding (`server/src/bots/`) uses Dijkstra rather than A*. The map graph includes teleporters, whose traversal cost isn't a consistent distance metric an A* heuristic could stay admissible against, so a heuristic-free shortest-path search was the safer choice at this map size.
