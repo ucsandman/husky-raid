@@ -51,10 +51,20 @@ const game = new Game(canvas, inputManager, net)
 // playing, and tear the scene down + release pointer lock the moment we
 // leave that phase (menu screen after 'leave', or match_end -> rematch
 // declined) so a stale render loop doesn't keep sending input frames.
+//
+// #appRoot has to go click-through at the same time. It is the outer host
+// from index.html; ui/menu.ts builds its own `div.app` INSIDE it and puts
+// `.app--playing { pointer-events: none }` on that inner div only. The
+// outer one is height:100% and paints over the fixed canvas, so it kept
+// swallowing the click that requests pointer lock -- and with the lock
+// never acquired, InputManager gates out every key and mouse button. The
+// game rendered perfectly and ignored the keyboard completely.
 let lastPhase: Phase | null = null
 store.subscribe((state) => {
   if (state.phase === lastPhase) return
-  canvas.style.pointerEvents = state.phase === 'playing' ? 'auto' : 'none'
+  const playing = state.phase === 'playing'
+  canvas.style.pointerEvents = playing ? 'auto' : 'none'
+  appRoot.style.pointerEvents = playing ? 'none' : 'auto'
   if (lastPhase === 'playing' && state.phase !== 'playing') {
     game.teardown()
     if (document.pointerLockElement === canvas) document.exitPointerLock()

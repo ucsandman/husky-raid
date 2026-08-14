@@ -2,6 +2,16 @@
 
 Reusable debugging lessons for RIFTLANE. Newest first, short entries.
 
+## 2026-08-14: Game rendered perfectly and ignored the keyboard completely
+
+**Symptom:** in a live match the scene rendered, bots fought, the HUD updated, and no key or mouse button did anything. It felt like the keyboard was disconnected.
+
+**Root cause:** `InputManager` gates every handler on `this.locked` (pointer lock), and pointer lock is requested from a click on the canvas. There are two nested app divs: the outer `#app` from `index.html`, and an inner `div.app` that `ui/menu.ts` builds inside it. `.app--playing { pointer-events: none }` is toggled on the **inner** div only, while the outer `#app` is `height:100%; position:relative` and paints over the fixed canvas. So the click landed on `#app`, `requestPointerLock()` was never called (no error, it simply never ran), `locked` stayed false, and every input was dropped. Confirmed live: `document.elementFromPoint(cx, cy)` returned `DIV#app` during a match.
+
+**Fix:** `main.ts` now flips `appRoot.style.pointerEvents` alongside the canvas on every phase change, so the whole DOM overlay is click-through while playing.
+
+**Prevention:** nothing about this is visible from reading the code, from tests, or from a screenshot -- the game LOOKS perfect while completely deaf. It survived because every previous check confirmed rendering, never control. Any "is the app working" pass on an interactive surface must drive one real input and confirm one state change caused by it. `elementFromPoint` at the point a user would click is the cheap version of that check.
+
 ## 2026-08-14: Deployed client dialed :8080 and could never connect from a browser
 
 **Symptom:** riftlane.onrender.com rendered the menu and reported no connection. The server was healthy: HTTP 200 in 0.13s, and a Node `ws` client got `{"t":"pong"}` back instantly over `wss://riftlane.onrender.com`. Only browsers failed, and they failed every single time. The deploy had never once worked from a browser.
