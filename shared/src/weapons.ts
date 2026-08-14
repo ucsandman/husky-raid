@@ -1,4 +1,8 @@
 import type { WeaponId, EquipmentId } from './types'
+import { MAX_SHIELD, MAX_HEALTH } from './constants'
+
+/** Guaranteed one-hit kill regardless of shield/health split: any value > the full pool (shield + health) always finishes the target. */
+const ONE_HIT_KILL_DAMAGE = MAX_SHIELD + MAX_HEALTH + 1
 
 /**
  * pellets doubles as "shots fired per trigger pull": 1 for normal hitscan/
@@ -116,7 +120,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   arc_blade: {
     name: 'Arc Blade',
     kind: 'power_melee',
-    damage: 999,
+    damage: ONE_HIT_KILL_DAMAGE,
     headshotMult: 1,
     rof: 1,
     magSize: 1,
@@ -127,7 +131,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   grav_maul: {
     name: 'Grav Maul',
     kind: 'power_melee',
-    damage: 999,
+    damage: ONE_HIT_KILL_DAMAGE,
     headshotMult: 1,
     rof: 0.7,
     magSize: 1,

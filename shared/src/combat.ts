@@ -127,8 +127,10 @@ function raySphere(origin: Vec3, dir: Vec3, center: Vec3, radius: number): numbe
  * Slab-tests walls and two-sphere-tests players (body + head), returns the
  * nearest hit. seeCamo defaults true: hitscan always hits camo'd players.
  * Bots will pass seeCamo=false to skip currently-camo'd players for line-of
- * -sight checks (Task 10); relies on camoUntil being zeroed on natural
- * expiry (applyDamage already zeroes it when camo breaks from damage).
+ * -sight checks (Task 10) — pass sim time as `now` in that case, matching
+ * the codebase's *Until convention (camoUntil is an absolute timestamp, not
+ * a flag; there's no zeroing-on-expiry, so comparing against a live `now`
+ * is what makes camo wear off instead of becoming permanent after first use).
  */
 export function raycast(
   origin: Vec3,
@@ -137,7 +139,8 @@ export function raycast(
   boxes: AABB[],
   players: PlayerState[],
   ignoreId: string,
-  seeCamo: boolean = true
+  seeCamo: boolean = true,
+  now: number = 0
 ): { kind: 'none' | 'wall' | 'player'; dist: number; playerId?: string; head?: boolean } {
   let bestDist = maxDist
   let kind: 'none' | 'wall' | 'player' = 'none'
@@ -156,7 +159,7 @@ export function raycast(
 
   for (const p of players) {
     if (p.id === ignoreId || !p.alive) continue
-    if (!seeCamo && p.camoUntil > 0) continue
+    if (!seeCamo && p.camoUntil > now) continue
 
     const bodyT = raySphere(origin, dir, bodyCenter(p.pos), PLAYER_BODY_RADIUS)
     if (bodyT !== null && bodyT < bestDist) {
