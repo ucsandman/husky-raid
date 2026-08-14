@@ -31,6 +31,16 @@ body {
 #app,
 .app {
   height: 100%;
+  /* #game-canvas is position:fixed -- a fixed/positioned element always
+     paints above a static one within the same stacking context regardless
+     of DOM order (CSS2.1 Appendix E: positioned descendants paint after
+     in-flow non-positioned ones). Without `position` here, #app (static)
+     rendered BEHIND the canvas's opaque #000 background on every screen,
+     not just 'playing' -- the whole menu was invisible. Making #app
+     positioned (stack level 0, same as the canvas) lets DOM order decide
+     between the two same-level siblings again, and #app comes after the
+     canvas in index.html so it wins. */
+  position: relative;
 }
 
 #game-canvas {
@@ -54,6 +64,15 @@ body {
     radial-gradient(circle at 85% 80%, rgba(255, 119, 51, 0.1), transparent 40%),
     linear-gradient(var(--bg-grid) 1px, transparent 1px) 0 0 / 100% 32px,
     var(--bg);
+}
+
+/* During 'playing', the real UI is Game's 3D canvas + the Hud overlay
+   (ui/hud.ts) -- this app div's own gradient background and default
+   pointer-events:auto would otherwise hide the canvas and block
+   pointer-lock clicks reaching it. See ui/menu.ts render(). */
+.app--playing {
+  background: transparent;
+  pointer-events: none;
 }
 
 .status-bar {

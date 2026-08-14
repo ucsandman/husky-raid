@@ -1,4 +1,4 @@
-import type { PlayerInput, PlayerState, Team, Vec3, WeaponId } from './types'
+import type { EquipmentId, PlayerInput, PlayerState, Team, Vec3, WeaponId } from './types'
 import type { FlagState, SimEvent } from './sim'
 import type { Projectile } from './combat'
 
@@ -60,6 +60,16 @@ export interface SnapPlayer {
   activeWeapon: 0 | 1
   camo: boolean
   carryingFlag: Team | null
+  /** HUD ruling (Task 14): the wire snapshot originally carried no
+   * ammo/grenade/equipment data at all -- these four fields were added so
+   * the HUD can render real ammo counts, grenade counts, and equipment
+   * charges instead of icons-with-no-numbers. Sent for every player (bots
+   * included), not just the local one -- the per-tick JSON cost of 4 small
+   * numbers/objects per player is negligible at 8 players * 20Hz. */
+  ammo: [number, number]
+  grenades: { frag: number; mag: number }
+  equipment: EquipmentId | null
+  equipmentCharges: number
 }
 
 export interface SnapProjectile {
@@ -86,5 +96,9 @@ export function toSnapPlayer(p: PlayerState, now: number): SnapPlayer {
     activeWeapon: p.activeWeapon,
     camo: p.camoUntil > now,
     carryingFlag: p.carryingFlag,
+    ammo: p.ammo,
+    grenades: p.grenades,
+    equipment: p.equipment,
+    equipmentCharges: p.equipmentCharges,
   }
 }

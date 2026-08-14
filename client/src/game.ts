@@ -9,6 +9,7 @@ import { disposeObject3D } from './render/dispose'
 import type { InputManager } from './input'
 import type { Net } from './net'
 import { ClientPrediction } from './predict'
+import { Hud } from './ui/hud'
 
 type MatchStartMsg = Extract<ServerMsg, { t: 'match_start' }>
 type SnapshotMsg = Extract<ServerMsg, { t: 'snapshot' }>
@@ -45,6 +46,7 @@ export class Game {
   private latestSnapshot: SnapshotMsg | null = null
   private bobPhase = 0
   private kickT = 1 // 1 = fully recovered, 0 = just fired
+  private hud: Hud | null = null
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -80,6 +82,7 @@ export class Game {
 
     this.bobPhase = 0
     this.kickT = 1
+    this.hud = new Hud()
     this.lastTime = performance.now()
     this.raf = requestAnimationFrame(this.loop)
   }
@@ -150,6 +153,8 @@ export class Game {
 
       effects.setDeathFade(localSnap ? !localSnap.alive : false, dt)
     }
+
+    this.hud?.update(dt, snap, this.localId, this.input.scoreboardHeld())
 
     effects.tickMapPulse(this.mapGroup)
     effects.update(dt)
@@ -232,6 +237,8 @@ export class Game {
       this.effects?.dispose()
     }
     ctx?.dispose()
+    this.hud?.dispose()
+    this.hud = null
 
     this.sceneCtx = null
     this.mapGroup = null

@@ -30,6 +30,11 @@ export function initMenu(root: HTMLElement, send: Send): void {
 }
 
 function render(app: HTMLElement, state: ClientState, send: Send): void {
+  // 'playing' hands the screen to Game's 3D canvas + the Hud overlay
+  // (client/src/game.ts, ui/hud.ts) -- this app div must stop painting its
+  // own opaque background and stop intercepting clicks/mousemove over it,
+  // or it blocks pointer-lock and hides the canvas underneath.
+  app.classList.toggle('app--playing', state.phase === 'playing')
   app.innerHTML = ''
   app.appendChild(renderStatusBar(state))
 
@@ -264,16 +269,21 @@ async function copyRoomCode(code: string, btn: HTMLButtonElement): Promise<void>
   }, 1500)
 }
 
-// ---- playing screen (placeholder -- Task 12 replaces this) --------------------
+// ---- playing screen -----------------------------------------------------------
+// Once snapshots are flowing, the real UI is Game's 3D canvas plus the Hud
+// overlay (ui/hud.ts) -- both live outside this render() cycle. This only
+// shows a connecting card for the brief gap before the first snapshot
+// arrives, then renders nothing so it can't cover the HUD.
 
 function renderPlayingScreen(state: ClientState): HTMLElement {
   const screen = el('div', 'screen screen--playing')
-  const card = el('div', 'card')
-  card.appendChild(el('h1', 'title', 'MATCH STARTING'))
-  card.appendChild(el('p', 'subtitle', state.mapName ? `map: ${state.mapName}` : 'connecting to arena…'))
-  card.appendChild(el('div', 'spinner'))
-  card.appendChild(el('p', 'hint', `snapshots received: ${state.snapshotCount}`))
-  screen.appendChild(card)
+  if (state.snapshotCount === 0) {
+    const card = el('div', 'card')
+    card.appendChild(el('h1', 'title', 'MATCH STARTING'))
+    card.appendChild(el('p', 'subtitle', state.mapName ? `map: ${state.mapName}` : 'connecting to arena…'))
+    card.appendChild(el('div', 'spinner'))
+    screen.appendChild(card)
+  }
   return screen
 }
 

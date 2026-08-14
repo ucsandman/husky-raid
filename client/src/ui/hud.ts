@@ -1,0 +1,429 @@
+import type { EquipmentId, FlagState, ServerMsg, SnapPlayer, Team, WeaponId } from '@riftlane/shared'
+import { MAX_HEALTH, MAX_SHIELD, RESPAWN_DELAY, WEAPONS, clamp } from '@riftlane/shared'
+import './hud.css'
+
+type SnapshotMsg = Extract<ServerMsg, { t: 'snapshot' }>
+
+const HEALTH_PIP_COUNT = 6
+const CROSSHAIR_KICK_PX = 6
+const CROSSHAIR_RECOVER_RATE = 6 // 1/s
+const HITMARKER_MS = 250
+const KILLFEED_MS = 4000
+const KILLFEED_MAX = 8
+
+const TEAM_NAME: Record<Team, string> = { 0: 'Cobalt', 1: 'Ember' }
+const EQUIP_GLYPH: Record<EquipmentId, string> = { grapple: 'G', repulsor: 'R', camo: 'C' }
+const SPECIAL_WEAPON_NAMES: Record<string, string> = { melee: 'Melee', frag: 'Frag Grenade', mag: 'Mag Grenade' }
+
+function weaponDisplayName(weapon: string): string {
+  const def = WEAPONS[weapon as WeaponId]
+  if (def) return def.name
+  return SPECIAL_WEAPON_NAMES[weapon] ?? weapon
+}
+
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag)
+  if (className) node.className = className
+  return node
+}
+
+interface TallyEntry {
+  kills: number
+  deaths: number
+  captures: number
+  team: Team
+  bot: boolean
+}
+
+interface WeaponRowEls {
+  row: HTMLDivElement
+  name: HTMLSpanElement
+  ammo: HTMLSpanElement
+}
+
+interface ChipEls {
+  chip: HTMLDivElement
+  count: HTMLSpanElement
+}
+
+/**
+ * The in-match HUD overlay: shield/health, ammo/grenades/equipment,
+ * crosshair + hit markers, kill feed, score strip, flag banners, respawn
+ * countdown, and the Tab-held scoreboard.
+ *
+ * Owns one fixed `pointer-events: none` div appended straight to
+ * document.body -- NOT routed through ui/menu.ts's render(), which does a
+ * full `innerHTML = ''` rebuild on every store change (state.snapshotCount
+ * ticks on every 20Hz snapshot). Game (client/src/game.ts) drives update()
+ * once per render frame and owns this instance's lifecycle: created in
+ * Game.start(), disposed in Game.teardown() -- matching Task 12's
+ * no-leaks-across-rematches discipline. This class itself adds no
+ * document-level event listeners, so dispose() only needs to clear
+ * pending timeouts and remove its own subtree.
+ *
+ * RULING (server sends no live per-player kills/deaths/captures on the
+ * wire -- only shield/health/weapons/ammo/grenades/equipment/camo/flag):
+ * the Tab scoreboard's K/D/C columns are tallied client-side from 'kill'/
+ * 'capture' SimEvents observed since this Hud was constructed (i.e. since
+ * match start). This can undercount if the client joins mid-match or a
+ * snapshot is dropped -- acceptable for v1; the match-end screen (Task 11,
+ * ui/menu.ts renderEndedScreen) uses the server's authoritative
+ * `match_end.board` instead, not this tally.
+ *
+ * RULING (no generic "you landed a hit" SimEvent exists, only 'shot' with
+ * no target and 'kill'): the hit marker fires only on a confirmed kill
+ * credited to the local player. It under-fires relative to "every damaging
+ * hit" but never fires on a false positive.
+ */
+export class Hud {
+  private readonly root: HTMLDivElement
+  private readonly crosshair: HTMLDivElement
+  private readonly hitmarker: HTMLDivElement
+  private readonly shieldFill: HTMLDivElement
+  private readonly healthPips: HTMLDivElement[] = []
+  private readonly weaponRows: [WeaponRowEls, WeaponRowEls]
+  private readonly fragChip: ChipEls
+  private readonly magChip: ChipEls
+  private readonly equipChip: HTMLDivElement
+  private readonly equipGlyph: HTMLSpanElement
+  private readonly equipCount: HTMLSpanElement
+  private readonly killfeed: HTMLDivElement
+  private readonly scoreCobalt: HTMLSpanElement
+  private readonly scoreEmber: HTMLSpanElement
+  private readonly timer: HTMLSpanElement
+  private readonly ownFlagBanner: HTMLDivElement
+  private readonly enemyFlagBanner: HTMLDivElement
+  private readonly respawnOverlay: HTMLDivElement
+  private readonly respawnCount: HTMLDivElement
+  private readonly scoreboard: HTMLDivElement
+  private readonly scoreboardCobaltBody: HTMLTableSectionElement
+  private readonly scoreboardEmberBody: HTMLTableSectionElement
+
+  private readonly nameCache = new Map<string, string>()
+  private readonly tally = new Map<string, TallyEntry>()
+  private readonly pendingTimeouts = new Set<ReturnType<typeof setTimeout>>()
+
+  private lastProcessedTick: number | null = null
+  private prevAlive = true
+  private respawnRemaining = 0
+  private crosshairKickT = 1 // 1 = fully recovered, 0 = just fired
+
+  constructor() {
+    this.root = el('div', 'hud')
+
+    this.crosshair = this.buildCrosshair()
+    this.hitmarker = el('div', 'hud-hitmarker')
+    this.root.append(this.crosshair, this.hitmarker)
+
+    const vitals = el('div', 'hud-vitals')
+    const shieldTrack = el('div', 'hud-shield-track')
+    this.shieldFill = el('div', 'hud-shield-fill')
+    shieldTrack.appendChild(this.shieldFill)
+    const pipsRow = el('div', 'hud-health-pips')
+    for (let i = 0; i < HEALTH_PIP_COUNT; i++) {
+      const pip = el('div', 'hud-pip')
+      const fill = el('div', 'hud-pip-fill')
+      pip.appendChild(fill)
+      pipsRow.appendChild(pip)
+      this.healthPips.push(fill)
+    }
+    vitals.append(shieldTrack, pipsRow)
+    this.root.appendChild(vitals)
+
+    const loadout = el('div', 'hud-loadout')
+    this.weaponRows = [this.buildWeaponRow(), this.buildWeaponRow()]
+    const chips = el('div', 'hud-chips')
+    this.fragChip = this.buildShapeChip('frag')
+    this.magChip = this.buildShapeChip('mag')
+    const equip = this.buildGlyphChip()
+    this.equipChip = equip.chip
+    this.equipGlyph = equip.glyph
+    this.equipCount = equip.count
+    chips.append(this.fragChip.chip, this.magChip.chip, this.equipChip)
+    loadout.append(this.weaponRows[0].row, this.weaponRows[1].row, chips)
+    this.root.appendChild(loadout)
+
+    this.killfeed = el('div', 'hud-killfeed')
+    this.root.appendChild(this.killfeed)
+
+    const scorestrip = el('div', 'hud-scorestrip')
+    this.scoreCobalt = el('span', 'hud-score-cobalt')
+    const dash = el('span')
+    dash.textContent = '—'
+    this.scoreEmber = el('span', 'hud-score-ember')
+    this.timer = el('span', 'hud-timer')
+    scorestrip.append(this.scoreCobalt, dash, this.scoreEmber, this.timer)
+    this.root.appendChild(scorestrip)
+
+    const flags = el('div', 'hud-flags')
+    this.ownFlagBanner = el('div', 'hud-flag-banner')
+    this.enemyFlagBanner = el('div', 'hud-flag-banner')
+    flags.append(this.ownFlagBanner, this.enemyFlagBanner)
+    this.root.appendChild(flags)
+
+    this.respawnOverlay = el('div', 'hud-respawn')
+    const respawnTitle = el('div', 'hud-respawn-title')
+    respawnTitle.textContent = 'ELIMINATED'
+    this.respawnCount = el('div', 'hud-respawn-count')
+    this.respawnOverlay.append(respawnTitle, this.respawnCount)
+    this.root.appendChild(this.respawnOverlay)
+
+    this.scoreboard = el('div', 'hud-scoreboard')
+    const cobaltCol = this.buildScoreboardTeam(0)
+    const emberCol = this.buildScoreboardTeam(1)
+    this.scoreboardCobaltBody = cobaltCol.body
+    this.scoreboardEmberBody = emberCol.body
+    this.scoreboard.append(cobaltCol.el, emberCol.el)
+    this.root.appendChild(this.scoreboard)
+
+    document.body.appendChild(this.root)
+  }
+
+  /** Called once per render frame from Game.tick(). `snap` is null before
+   * the first snapshot arrives; crosshair recovery still runs so it isn't
+   * stuck mid-kick if a frame lands right on match start. */
+  update(dt: number, snap: SnapshotMsg | null, localId: string | null, scoreboardHeld: boolean): void {
+    this.scoreboard.classList.toggle('hud-scoreboard--show', scoreboardHeld)
+
+    this.crosshairKickT = Math.min(1, this.crosshairKickT + dt * CROSSHAIR_RECOVER_RATE)
+    const kickPx = (1 - this.crosshairKickT) * CROSSHAIR_KICK_PX
+    this.crosshair.style.setProperty('--hud-kick', `${kickPx}px`)
+
+    if (!snap) return
+
+    for (const p of snap.players) this.nameCache.set(p.id, p.name)
+
+    if (snap.tick !== this.lastProcessedTick) {
+      this.lastProcessedTick = snap.tick
+      this.processEvents(snap.events, snap.players, localId)
+    }
+
+    const localSnap = localId ? (snap.players.find((p) => p.id === localId) ?? null) : null
+    if (localSnap) {
+      this.updateVitals(localSnap)
+      this.updateWeapons(localSnap)
+      this.updateLoadout(localSnap)
+      this.updateFlags(localSnap, snap.flags)
+      this.updateRespawn(localSnap, dt)
+      this.root.classList.toggle('hud--camo', localSnap.camo)
+    }
+
+    this.updateScoreStrip(snap.scores, snap.timeLeft)
+    if (scoreboardHeld) this.updateScoreboard(snap.players)
+  }
+
+  dispose(): void {
+    for (const t of this.pendingTimeouts) clearTimeout(t)
+    this.pendingTimeouts.clear()
+    this.root.remove()
+  }
+
+  // ---- build helpers -----------------------------------------------------
+
+  private buildCrosshair(): HTMLDivElement {
+    const wrap = el('div', 'hud-crosshair')
+    for (const dir of ['n', 's', 'w', 'e'] as const) {
+      wrap.appendChild(el('div', `hud-crosshair-line hud-crosshair-line--${dir}`))
+    }
+    return wrap
+  }
+
+  private buildWeaponRow(): WeaponRowEls {
+    const row = el('div', 'hud-weapon-row')
+    const name = el('span', 'hud-weapon-name')
+    const ammo = el('span', 'hud-weapon-ammo')
+    row.append(name, ammo)
+    return { row, name, ammo }
+  }
+
+  private buildShapeChip(kind: 'frag' | 'mag'): ChipEls {
+    const chip = el('div', 'hud-chip')
+    chip.appendChild(el('div', `hud-chip-shape hud-chip-shape--${kind}`))
+    const count = el('span', 'hud-chip-count')
+    chip.appendChild(count)
+    return { chip, count }
+  }
+
+  private buildGlyphChip(): { chip: HTMLDivElement; glyph: HTMLSpanElement; count: HTMLSpanElement } {
+    const chip = el('div', 'hud-chip')
+    const glyph = el('span', 'hud-chip-glyph')
+    const count = el('span', 'hud-chip-count')
+    chip.append(glyph, count)
+    return { chip, glyph, count }
+  }
+
+  private buildScoreboardTeam(team: Team): { el: HTMLDivElement; body: HTMLTableSectionElement } {
+    const wrap = el('div', 'hud-scoreboard-team')
+    const heading = el('div', `hud-scoreboard-heading hud-scoreboard-heading--${team === 0 ? 'cobalt' : 'ember'}`)
+    heading.textContent = TEAM_NAME[team]
+    const table = el('table', 'hud-scoreboard-table')
+    const head = el('tr')
+    for (const label of ['Name', 'K', 'D', 'C']) {
+      const th = el('th')
+      th.textContent = label
+      head.appendChild(th)
+    }
+    const thead = el('thead')
+    thead.appendChild(head)
+    const body = el('tbody')
+    table.append(thead, body)
+    wrap.append(heading, table)
+    return { el: wrap, body }
+  }
+
+  // ---- event processing (gated to run once per new snapshot tick) -------
+
+  private processEvents(events: SnapshotMsg['events'], players: SnapPlayer[], localId: string | null): void {
+    for (const ev of events) {
+      if (ev.type === 'kill') {
+        this.bumpTally(ev.killerId, 'kills', players)
+        this.bumpTally(ev.victimId, 'deaths', players)
+        this.addKillFeedEntry(ev.killerId, ev.victimId, ev.weapon, localId)
+        if (ev.killerId === localId) this.showHitMarker()
+      } else if (ev.type === 'capture') {
+        this.bumpTally(ev.playerId, 'captures', players)
+      } else if (ev.type === 'shot' && ev.playerId === localId) {
+        this.crosshairKickT = 0
+      }
+    }
+  }
+
+  private bumpTally(id: string, field: 'kills' | 'deaths' | 'captures', players: SnapPlayer[]): void {
+    let entry = this.tally.get(id)
+    if (!entry) {
+      const found = players.find((p) => p.id === id)
+      entry = { kills: 0, deaths: 0, captures: 0, team: found?.team ?? 0, bot: found?.bot ?? false }
+      this.tally.set(id, entry)
+    }
+    entry[field] += 1
+  }
+
+  private addKillFeedEntry(killerId: string, victimId: string, weapon: string, localId: string | null): void {
+    const killerName = this.nameCache.get(killerId) ?? '???'
+    const victimName = this.nameCache.get(victimId) ?? '???'
+    const entry = el('div', 'hud-killfeed-entry')
+    if (killerId === localId) entry.classList.add('hud-killfeed-entry--own')
+    entry.textContent = `${killerName} ▸ ${weaponDisplayName(weapon)} ▸ ${victimName}`
+    this.killfeed.prepend(entry)
+    while (this.killfeed.children.length > KILLFEED_MAX) {
+      this.killfeed.lastElementChild?.remove()
+    }
+    const t = setTimeout(() => {
+      entry.remove()
+      this.pendingTimeouts.delete(t)
+    }, KILLFEED_MS)
+    this.pendingTimeouts.add(t)
+  }
+
+  private showHitMarker(): void {
+    this.hitmarker.classList.add('hud-hitmarker--show')
+    const t = setTimeout(() => {
+      this.hitmarker.classList.remove('hud-hitmarker--show')
+      this.pendingTimeouts.delete(t)
+    }, HITMARKER_MS)
+    this.pendingTimeouts.add(t)
+  }
+
+  // ---- per-frame local-player panels --------------------------------------
+
+  private updateVitals(local: SnapPlayer): void {
+    this.shieldFill.style.width = `${clamp(local.shield / MAX_SHIELD, 0, 1) * 100}%`
+    const perPip = MAX_HEALTH / HEALTH_PIP_COUNT
+    for (let i = 0; i < HEALTH_PIP_COUNT; i++) {
+      const frac = clamp((local.health - i * perPip) / perPip, 0, 1)
+      this.healthPips[i].style.width = `${frac * 100}%`
+    }
+  }
+
+  private updateWeapons(local: SnapPlayer): void {
+    for (let slot = 0 as 0 | 1; slot < 2; slot++) {
+      const weaponId = local.weapons[slot]
+      const def = WEAPONS[weaponId]
+      const els = this.weaponRows[slot]
+      els.name.textContent = def.name
+      els.ammo.textContent = `${local.ammo[slot]}/${def.magSize}`
+      els.row.classList.toggle('hud-weapon-row--active', slot === local.activeWeapon)
+    }
+  }
+
+  private updateLoadout(local: SnapPlayer): void {
+    this.fragChip.count.textContent = String(local.grenades.frag)
+    this.fragChip.chip.classList.toggle('hud-chip--empty', local.grenades.frag <= 0)
+    this.magChip.count.textContent = String(local.grenades.mag)
+    this.magChip.chip.classList.toggle('hud-chip--empty', local.grenades.mag <= 0)
+
+    const eq = local.equipment
+    this.equipGlyph.textContent = eq ? EQUIP_GLYPH[eq] : '—'
+    this.equipCount.textContent = eq ? String(local.equipmentCharges) : ''
+    this.equipChip.classList.toggle('hud-chip--empty', !eq)
+  }
+
+  private updateFlags(local: SnapPlayer, flags: FlagState[]): void {
+    const ownFlag = flags[local.team]
+    if (ownFlag?.state === 'carried') {
+      this.ownFlagBanner.textContent = '▲ YOUR FLAG TAKEN'
+      this.ownFlagBanner.className = 'hud-flag-banner hud-flag-banner--show hud-flag-banner--danger'
+    } else if (ownFlag?.state === 'dropped') {
+      this.ownFlagBanner.textContent = 'YOUR FLAG DROPPED'
+      this.ownFlagBanner.className = 'hud-flag-banner hud-flag-banner--show hud-flag-banner--warn'
+    } else {
+      this.ownFlagBanner.className = 'hud-flag-banner'
+    }
+
+    if (local.carryingFlag !== null) {
+      this.enemyFlagBanner.textContent = 'ENEMY FLAG SECURED'
+      this.enemyFlagBanner.className = 'hud-flag-banner hud-flag-banner--show hud-flag-banner--ok'
+    } else {
+      this.enemyFlagBanner.className = 'hud-flag-banner'
+    }
+  }
+
+  /** RESPAWN_DELAY-second countdown, started client-side the tick alive
+   * flips false (the server carries no respawnAt on the wire -- see
+   * SnapPlayer). Resets the moment alive flips back true. */
+  private updateRespawn(local: SnapPlayer, dt: number): void {
+    if (!local.alive) {
+      this.respawnRemaining = this.prevAlive ? RESPAWN_DELAY : Math.max(0, this.respawnRemaining - dt)
+      this.respawnOverlay.classList.add('hud-respawn--show')
+      this.respawnCount.textContent = String(Math.ceil(this.respawnRemaining))
+    } else {
+      this.respawnOverlay.classList.remove('hud-respawn--show')
+      this.respawnRemaining = 0
+    }
+    this.prevAlive = local.alive
+  }
+
+  private updateScoreStrip(scores: [number, number], timeLeft: number): void {
+    this.scoreCobalt.textContent = String(scores[0])
+    this.scoreEmber.textContent = String(scores[1])
+    const clamped = Math.max(0, Math.ceil(timeLeft))
+    const mins = Math.floor(clamped / 60)
+    const secs = clamped % 60
+    this.timer.textContent = `${mins}:${String(secs).padStart(2, '0')}`
+  }
+
+  private updateScoreboard(players: SnapPlayer[]): void {
+    const groups: [SnapPlayer[], SnapPlayer[]] = [[], []]
+    for (const p of players) groups[p.team].push(p)
+    this.renderScoreboardTeam(this.scoreboardCobaltBody, groups[0])
+    this.renderScoreboardTeam(this.scoreboardEmberBody, groups[1])
+  }
+
+  private renderScoreboardTeam(body: HTMLTableSectionElement, players: SnapPlayer[]): void {
+    body.innerHTML = '' // safe: only ever holds rows built below via textContent, no untrusted HTML
+    for (const p of players) {
+      const stats = this.tally.get(p.id)
+      const tr = el('tr')
+      const nameTd = el('td')
+      nameTd.textContent = p.bot ? `${p.name} [BOT]` : p.name
+      const kTd = el('td')
+      kTd.textContent = String(stats?.kills ?? 0)
+      const dTd = el('td')
+      dTd.textContent = String(stats?.deaths ?? 0)
+      const cTd = el('td')
+      cTd.textContent = String(stats?.captures ?? 0)
+      tr.append(nameTd, kTd, dTd, cTd)
+      body.appendChild(tr)
+    }
+  }
+}

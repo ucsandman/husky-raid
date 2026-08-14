@@ -100,3 +100,38 @@ describe('HostedMatch: match end', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 })
+
+describe('HostedMatch: SnapPlayer HUD fields (Task 14)', () => {
+  it('sends ammo/grenades/equipment/equipmentCharges with sane values for every player', () => {
+    vi.useFakeTimers()
+    const received: ServerMsg[] = []
+    // Fake single client -- one human "hello"s in, the rest of the roster
+    // is bots, matching how a real HUD-driving browser session would see
+    // this snapshot stream.
+    const match = new HostedMatch('gutter', 4, (_id, msg) => received.push(msg), () => 3000)
+    match.addHuman('h1', 'Human1')
+    for (let i = 0; i < 3; i++) match.addBot()
+    match.start()
+
+    vi.advanceTimersByTime(100)
+    match.stop()
+
+    const snap = received.filter(isSnapshot).at(-1)
+    expect(snap).toBeDefined()
+    expect(snap!.players.length).toBe(4)
+    for (const p of snap!.players) {
+      expect(p.ammo).toHaveLength(2)
+      for (const a of p.ammo) {
+        expect(Number.isInteger(a)).toBe(true)
+        expect(a).toBeGreaterThanOrEqual(0)
+      }
+      expect(Number.isInteger(p.grenades.frag)).toBe(true)
+      expect(p.grenades.frag).toBeGreaterThanOrEqual(0)
+      expect(Number.isInteger(p.grenades.mag)).toBe(true)
+      expect(p.grenades.mag).toBeGreaterThanOrEqual(0)
+      expect(['grapple', 'repulsor', 'camo', null]).toContain(p.equipment)
+      expect(Number.isInteger(p.equipmentCharges)).toBe(true)
+      expect(p.equipmentCharges).toBeGreaterThanOrEqual(0)
+    }
+  })
+})

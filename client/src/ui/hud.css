@@ -1,0 +1,457 @@
+/* In-match HUD overlay (Task 14). Lives in a single fixed div created by
+   Hud (client/src/ui/hud.ts) on match start and torn down on match end --
+   never mounted through menu.ts's re-render cycle, since that runs a full
+   innerHTML rebuild on every store change (would thrash this at 20Hz+). */
+
+.hud {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  font-family: var(--mono);
+  color: var(--text);
+  /* The whole overlay must never intercept a click/mousemove -- that would
+     block pointer-lock re-acquisition and mouselook on the canvas beneath
+     it. Every interactive-looking child still inherits this. */
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.2s ease;
+}
+
+.hud--camo {
+  opacity: 0.55;
+}
+
+/* ---- crosshair ------------------------------------------------------- */
+
+.hud-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+}
+
+.hud-crosshair-line {
+  position: absolute;
+  background: var(--text);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+}
+
+.hud-crosshair-line--n,
+.hud-crosshair-line--s {
+  width: 2px;
+  height: 8px;
+  left: -1px;
+  top: -4px;
+}
+
+.hud-crosshair-line--w,
+.hud-crosshair-line--e {
+  width: 8px;
+  height: 2px;
+  top: -1px;
+  left: -4px;
+}
+
+.hud-crosshair-line--n {
+  transform: translateY(calc(-1 * (10px + var(--hud-kick, 0px))));
+}
+
+.hud-crosshair-line--s {
+  transform: translateY(calc(10px + var(--hud-kick, 0px)));
+}
+
+.hud-crosshair-line--w {
+  transform: translateX(calc(-1 * (10px + var(--hud-kick, 0px))));
+}
+
+.hud-crosshair-line--e {
+  transform: translateX(calc(10px + var(--hud-kick, 0px)));
+}
+
+/* ---- hit marker -------------------------------------------------------- */
+
+.hud-hitmarker {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.hud-hitmarker--show {
+  opacity: 1;
+}
+
+.hud-hitmarker::before,
+.hud-hitmarker::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--danger);
+  box-shadow: 0 0 4px var(--danger);
+}
+
+.hud-hitmarker::before {
+  transform: rotate(45deg);
+}
+
+.hud-hitmarker::after {
+  transform: rotate(-45deg);
+}
+
+/* ---- shield / health (bottom-left) ------------------------------------ */
+
+.hud-vitals {
+  position: absolute;
+  left: 1.25rem;
+  bottom: 1.25rem;
+  width: 220px;
+}
+
+.hud-shield-track {
+  width: 100%;
+  height: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(19, 24, 38, 0.8);
+  overflow: hidden;
+}
+
+.hud-shield-fill {
+  height: 100%;
+  background: var(--cobalt);
+  box-shadow: 0 0 6px var(--cobalt);
+  transition: width 0.15s ease;
+}
+
+.hud-health-pips {
+  display: flex;
+  gap: 3px;
+  margin-top: 0.4rem;
+}
+
+.hud-pip {
+  flex: 1;
+  height: 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: rgba(19, 24, 38, 0.8);
+  overflow: hidden;
+}
+
+.hud-pip-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--ok);
+  transition: width 0.15s ease;
+}
+
+/* ---- weapons + loadout (bottom-right) ---------------------------------- */
+
+.hud-loadout {
+  position: absolute;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+
+.hud-weapon-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(19, 24, 38, 0.75);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.hud-weapon-row--active {
+  border-color: var(--cobalt);
+  color: var(--text);
+  background: rgba(51, 102, 255, 0.15);
+}
+
+.hud-weapon-name {
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.hud-weapon-ammo {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.hud-chips {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.hud-chip {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(19, 24, 38, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hud-chip--empty {
+  opacity: 0.35;
+}
+
+.hud-chip-shape {
+  width: 12px;
+  height: 12px;
+  background: var(--ember);
+}
+
+.hud-chip-shape--frag {
+  border-radius: 50%;
+}
+
+.hud-chip-shape--mag {
+  background: var(--cobalt);
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+
+.hud-chip-glyph {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.hud-chip-count {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  min-width: 13px;
+  padding: 0 2px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  font-size: 0.6rem;
+  line-height: 13px;
+  text-align: center;
+  color: var(--text);
+}
+
+/* ---- kill feed (top-right) --------------------------------------------- */
+
+.hud-killfeed {
+  position: absolute;
+  top: 1rem;
+  right: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.3rem;
+  max-width: 320px;
+}
+
+.hud-killfeed-entry {
+  padding: 0.3rem 0.6rem;
+  border-radius: 5px;
+  background: rgba(19, 24, 38, 0.8);
+  border: 1px solid var(--border);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  opacity: 1;
+  animation: hud-kill-fade 4s ease forwards;
+}
+
+.hud-killfeed-entry--own {
+  border-color: var(--cobalt);
+  background: rgba(51, 102, 255, 0.2);
+}
+
+@keyframes hud-kill-fade {
+  0%, 70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ---- score strip (top-center) ------------------------------------------ */
+
+.hud-scorestrip {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.35rem 0.9rem;
+  border-radius: 8px;
+  background: rgba(19, 24, 38, 0.8);
+  border: 1px solid var(--border);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.hud-score-cobalt {
+  color: var(--cobalt);
+}
+
+.hud-score-ember {
+  color: var(--ember);
+}
+
+.hud-timer {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin-left: 0.4rem;
+}
+
+/* ---- flag banners ------------------------------------------------------ */
+
+.hud-flags {
+  position: absolute;
+  top: 3.6rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.hud-flag-banner {
+  display: none;
+  padding: 0.25rem 0.7rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.hud-flag-banner--show {
+  display: block;
+}
+
+.hud-flag-banner--danger {
+  background: rgba(255, 77, 94, 0.2);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.hud-flag-banner--warn {
+  background: rgba(255, 178, 63, 0.2);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+}
+
+.hud-flag-banner--ok {
+  background: rgba(53, 208, 127, 0.2);
+  border: 1px solid var(--ok);
+  color: var(--ok);
+}
+
+/* ---- respawn overlay ----------------------------------------------------- */
+
+.hud-respawn {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: rgba(10, 13, 20, 0.55);
+}
+
+.hud-respawn--show {
+  display: flex;
+}
+
+.hud-respawn-title {
+  font-size: 1.1rem;
+  letter-spacing: 0.15em;
+  color: var(--danger);
+}
+
+.hud-respawn-count {
+  font-size: 3rem;
+  font-weight: 700;
+}
+
+/* ---- scoreboard (Tab held) ----------------------------------------------- */
+
+.hud-scoreboard {
+  position: absolute;
+  top: 3rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  gap: 1.5rem;
+  padding: 1rem 1.25rem;
+  border-radius: 10px;
+  background: rgba(10, 13, 20, 0.9);
+  border: 1px solid var(--border);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.hud-scoreboard--show {
+  display: flex;
+}
+
+.hud-scoreboard-team {
+  min-width: 240px;
+}
+
+.hud-scoreboard-heading {
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 0.4rem;
+}
+
+.hud-scoreboard-heading--cobalt {
+  color: var(--cobalt);
+}
+
+.hud-scoreboard-heading--ember {
+  color: var(--ember);
+}
+
+.hud-scoreboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.hud-scoreboard-table th,
+.hud-scoreboard-table td {
+  text-align: left;
+  padding: 0.25rem 0.5rem;
+}
+
+.hud-scoreboard-table th {
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.hud-scoreboard-table td + td,
+.hud-scoreboard-table th + th {
+  text-align: right;
+}
