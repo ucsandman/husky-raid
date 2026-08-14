@@ -13,13 +13,17 @@ export const gutter: GameMap = {
     { min: { x: -3, y: -1, z: -22 }, max: { x: 3, y: 0, z: 22 } }, // 2 center lane
     { min: { x: -6, y: -1, z: -22 }, max: { x: -4, y: 0, z: 22 } }, // 3 left rail
     { min: { x: 4, y: -1, z: -22 }, max: { x: 6, y: 0, z: 22 } }, // 4 right rail
+    // short bridges over the left gutter, at the teleporter alcove crossings,
+    // so the walk edges to/from the alcove waypoints don't cross the pit
+    { min: { x: -4, y: -1, z: -18.5 }, max: { x: -3, y: 0, z: -17.5 } }, // 5 gutter bridge, z=-18
+    { min: { x: -4, y: -1, z: 17.5 }, max: { x: -3, y: 0, z: 18.5 } }, // 6 gutter bridge, z=+18
     // cover boxes, ~1m tall, staggered every ~6 units down the lane
-    { min: { x: -2.7, y: 0, z: -18.7 }, max: { x: -1.3, y: 1, z: -17.3 } }, // 5
-    { min: { x: 1.3, y: 0, z: -12.7 }, max: { x: 2.7, y: 1, z: -11.3 } }, // 6
-    { min: { x: -2.7, y: 0, z: -6.7 }, max: { x: -1.3, y: 1, z: -5.3 } }, // 7
-    { min: { x: 1.3, y: 0, z: 5.3 }, max: { x: 2.7, y: 1, z: 6.7 } }, // 8
-    { min: { x: -2.7, y: 0, z: 11.3 }, max: { x: -1.3, y: 1, z: 12.7 } }, // 9
-    { min: { x: 1.3, y: 0, z: 17.3 }, max: { x: 2.7, y: 1, z: 18.7 } }, // 10
+    { min: { x: -2.7, y: 0, z: -18.7 }, max: { x: -1.3, y: 1, z: -17.3 } }, // 7
+    { min: { x: 1.3, y: 0, z: -12.7 }, max: { x: 2.7, y: 1, z: -11.3 } }, // 8
+    { min: { x: -2.7, y: 0, z: -6.7 }, max: { x: -1.3, y: 1, z: -5.3 } }, // 9
+    { min: { x: 1.3, y: 0, z: 5.3 }, max: { x: 2.7, y: 1, z: 6.7 } }, // 10
+    { min: { x: -2.7, y: 0, z: 11.3 }, max: { x: -1.3, y: 1, z: 12.7 } }, // 11
+    { min: { x: 1.3, y: 0, z: 17.3 }, max: { x: 2.7, y: 1, z: 18.7 } }, // 12
   ],
   boxColors: [
     0x2244aa, // cobalt base
@@ -27,6 +31,8 @@ export const gutter: GameMap = {
     0x888888, // center lane
     0x777777, // left rail
     0x777777, // right rail
+    0x777777, // gutter bridge
+    0x777777, // gutter bridge
     0x3355bb, // cover (cobalt side)
     0x3355bb,
     0x3355bb,

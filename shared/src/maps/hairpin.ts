@@ -13,18 +13,20 @@ export const hairpin: GameMap = {
     { min: { x: -12, y: -1, z: -30 }, max: { x: -8, y: 0, z: 32 } }, // 0 left leg floor
     { min: { x: 8, y: -1, z: -30 }, max: { x: 12, y: 0, z: 32 } }, // 1 right leg floor
     { min: { x: -12, y: -1, z: 30 }, max: { x: 12, y: 0, z: 39 } }, // 2 joint floor
-    { min: { x: -12, y: 0, z: -30 }, max: { x: -8, y: 0.5, z: -22 } }, // 3 cobalt base
-    { min: { x: 8, y: 0, z: 22 }, max: { x: 12, y: 0.5, z: 30 } }, // 4 ember base
-    { min: { x: -12, y: 2.7, z: 30 }, max: { x: 12, y: 3, z: 39 } }, // 5 high walkway
-    { min: { x: -11, y: 0, z: -5.75 }, max: { x: -9, y: 1, z: -4.25 } }, // 6 cover, left leg
-    { min: { x: -11, y: 0, z: 9.25 }, max: { x: -9, y: 1, z: 10.75 } }, // 7 cover, left leg
-    { min: { x: 9, y: 0, z: -5.75 }, max: { x: 11, y: 1, z: -4.25 } }, // 8 cover, right leg
-    { min: { x: 9, y: 0, z: 9.25 }, max: { x: 11, y: 1, z: 10.75 } }, // 9 cover, right leg
+    { min: { x: -8, y: -1, z: 26 }, max: { x: 8, y: 0, z: 30 } }, // 3 pad approach floor (bridges legs to joint, x in (-8,8) had no floor)
+    { min: { x: -12, y: 0, z: -30 }, max: { x: -8, y: 0.5, z: -22 } }, // 4 cobalt base
+    { min: { x: 8, y: 0, z: 22 }, max: { x: 12, y: 0.5, z: 30 } }, // 5 ember base
+    { min: { x: -12, y: 2.7, z: 30 }, max: { x: 12, y: 3, z: 39 } }, // 6 high walkway
+    { min: { x: -11, y: 0, z: -5.75 }, max: { x: -9, y: 1, z: -4.25 } }, // 7 cover, left leg
+    { min: { x: -11, y: 0, z: 9.25 }, max: { x: -9, y: 1, z: 10.75 } }, // 8 cover, left leg
+    { min: { x: 9, y: 0, z: -5.75 }, max: { x: 11, y: 1, z: -4.25 } }, // 9 cover, right leg
+    { min: { x: 9, y: 0, z: 9.25 }, max: { x: 11, y: 1, z: 10.75 } }, // 10 cover, right leg
   ],
   boxColors: [
     0x777777, // left leg floor
     0x777777, // right leg floor
     0x888888, // joint floor
+    0x888888, // pad approach floor
     0x2244aa, // cobalt base
     0xaa5522, // ember base
     0x999999, // high walkway
