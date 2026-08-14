@@ -18,7 +18,10 @@ const SPECIAL_WEAPON_NAMES: Record<string, string> = { melee: 'Melee', frag: 'Fr
 function weaponDisplayName(weapon: string): string {
   const def = WEAPONS[weapon as WeaponId]
   if (def) return def.name
-  return SPECIAL_WEAPON_NAMES[weapon] ?? weapon
+  if (weapon in SPECIAL_WEAPON_NAMES) return SPECIAL_WEAPON_NAMES[weapon]
+  // Unknown weapon string (e.g. 'fall') -- format like the table names above
+  // instead of dumping the raw lowercase wire value.
+  return weapon.length > 0 ? weapon.charAt(0).toUpperCase() + weapon.slice(1) : weapon
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
@@ -73,7 +76,11 @@ interface ChipEls {
  * RULING (no generic "you landed a hit" SimEvent exists, only 'shot' with
  * no target and 'kill'): the hit marker fires only on a confirmed kill
  * credited to the local player. It under-fires relative to "every damaging
- * hit" but never fires on a false positive.
+ * hit" but never fires on a false positive. A self-kill (killerId ===
+ * victimId, e.g. a fall) never fires it, never bumps the kill tally, and
+ * never highlights as an "own kill" in the feed -- matches
+ * MatchSim.killPlayer, which only credits a kill when killerId is set and
+ * differs from the victim.
  */
 export class Hud {
   private readonly root: HTMLDivElement
@@ -276,10 +283,17 @@ export class Hud {
   private processEvents(events: SnapshotMsg['events'], players: SnapPlayer[], localId: string | null): void {
     for (const ev of events) {
       if (ev.type === 'kill') {
-        this.bumpTally(ev.killerId, 'kills', players)
+        // Fall deaths (and any other self-inflicted death) come through as
+        // killerId === victimId. The server itself never credits that as a
+        // kill (MatchSim.killPlayer only bumps killer.kills when killerId
+        // is set AND differs from the victim) -- only bumps the victim's
+        // death count. Mirror that here: no kill tally, no hit marker, no
+        // "own kill" highlight for a fall.
+        const isSelfKill = ev.killerId === ev.victimId
+        if (!isSelfKill) this.bumpTally(ev.killerId, 'kills', players)
         this.bumpTally(ev.victimId, 'deaths', players)
-        this.addKillFeedEntry(ev.killerId, ev.victimId, ev.weapon, localId)
-        if (ev.killerId === localId) this.showHitMarker()
+        this.addKillFeedEntry(ev.killerId, ev.victimId, ev.weapon, localId, isSelfKill)
+        if (!isSelfKill && ev.killerId === localId) this.showHitMarker()
       } else if (ev.type === 'capture') {
         this.bumpTally(ev.playerId, 'captures', players)
       } else if (ev.type === 'shot' && ev.playerId === localId) {
@@ -298,12 +312,24 @@ export class Hud {
     entry[field] += 1
   }
 
-  private addKillFeedEntry(killerId: string, victimId: string, weapon: string, localId: string | null): void {
-    const killerName = this.nameCache.get(killerId) ?? '???'
+  private addKillFeedEntry(
+    killerId: string,
+    victimId: string,
+    weapon: string,
+    localId: string | null,
+    isSelfKill: boolean
+  ): void {
     const victimName = this.nameCache.get(victimId) ?? '???'
     const entry = el('div', 'hud-killfeed-entry')
-    if (killerId === localId) entry.classList.add('hud-killfeed-entry--own')
-    entry.textContent = `${killerName} ▸ ${weaponDisplayName(weapon)} ▸ ${victimName}`
+    if (isSelfKill) {
+      // No killer segment for a self-death (e.g. a fall) -- there's no one
+      // to credit, so don't imply one with an "X killed X" line.
+      entry.textContent = `☠ ${victimName} fell`
+    } else {
+      const killerName = this.nameCache.get(killerId) ?? '???'
+      if (killerId === localId) entry.classList.add('hud-killfeed-entry--own')
+      entry.textContent = `${killerName} ▸ ${weaponDisplayName(weapon)} ▸ ${victimName}`
+    }
     this.killfeed.prepend(entry)
     while (this.killfeed.children.length > KILLFEED_MAX) {
       this.killfeed.lastElementChild?.remove()
