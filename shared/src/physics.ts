@@ -1,6 +1,6 @@
 import type { Vec3, AABB, PlayerState, PlayerInput } from './types'
 import type { GameMap } from './map'
-import { add, sub, scale, dot, normalize, length } from './math'
+import { add, sub, scale, dot, normalize, length, distSq } from './math'
 import {
   MOVE_SPEED,
   ACCEL_GROUND,
@@ -11,10 +11,9 @@ import {
   PLAYER_RADIUS,
   PLAYER_HEIGHT,
   FLAG_CARRIER_SPEED_MULT,
+  TELEPORT_COOLDOWN,
+  TELEPORT_ARRIVAL_OFFSET,
 } from './constants'
-
-const TELEPORT_COOLDOWN = 1
-const TELEPORT_ARRIVAL_OFFSET = 1.5
 
 function playerAABB(pos: Vec3): AABB {
   return {
@@ -39,6 +38,10 @@ function aabbOverlap(a: AABB, b: AABB): boolean {
  * v1 simplification: the player capsule is treated as its bounding AABB
  * (PLAYER_RADIUS wide, PLAYER_HEIGHT tall), not a true swept capsule.
  * Axis-separated resolution: integrate + resolve x, then y, then z.
+ * Known limitation: only the Y pass pushes out a pre-existing (zero-velocity)
+ * overlap, via the vel.y<=0 landing branch. X/Z overlap only resolves while
+ * vel.x/vel.z is nonzero, so a capsule already stuck inside a box on the X/Z
+ * axes with zero horizontal velocity will not be un-stuck by this function alone.
  */
 export function collideCapsule(
   pos: Vec3,
@@ -160,10 +163,8 @@ export function stepMovement(
   p.teleportCooldownUntil = Math.max(0, p.teleportCooldownUntil - dt)
   if (p.teleportCooldownUntil <= 0) {
     for (const tp of map.teleporters) {
-      const distSqA =
-        (p.pos.x - tp.a.x) ** 2 + (p.pos.y - tp.a.y) ** 2 + (p.pos.z - tp.a.z) ** 2
-      const distSqB =
-        (p.pos.x - tp.b.x) ** 2 + (p.pos.y - tp.b.y) ** 2 + (p.pos.z - tp.b.z) ** 2
+      const distSqA = distSq(p.pos, tp.a)
+      const distSqB = distSq(p.pos, tp.b)
       if (distSqA <= tp.radius * tp.radius) {
         const dir = normalize(sub(tp.b, tp.a))
         p.pos = add(tp.b, scale(dir, TELEPORT_ARRIVAL_OFFSET))

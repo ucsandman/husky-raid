@@ -69,5 +69,13 @@ export interface PlayerState {
   kills: number
   deaths: number
   captures: number
+  /**
+   * NOT an absolute timestamp, unlike its *Until/*At siblings above
+   * (cooldownUntil, equipmentCooldownUntil, camoUntil, respawnAt,
+   * lastDamageAt). stepMovement has no global clock — only a per-tick
+   * dt — so this is a countdown of seconds remaining: it decrements by
+   * dt every tick, floors at 0, and resets to TELEPORT_COOLDOWN on
+   * teleport. Compare with `<= 0`, not against a "now".
+   */
   teleportCooldownUntil: number
 }

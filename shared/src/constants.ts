@@ -31,3 +31,5 @@ export const GRAPPLE_COOLDOWN = 2
 export const REPULSOR_CHARGES = 2
 export const REPULSOR_RADIUS = 4
 export const REPULSOR_IMPULSE = 14
+export const TELEPORT_COOLDOWN = 1
+export const TELEPORT_ARRIVAL_OFFSET = 1.5
