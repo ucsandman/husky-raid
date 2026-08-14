@@ -25,22 +25,22 @@ function el<K extends keyof HTMLElementTagNameMap>(
  * store. No framework: full re-render of the screen area on every state
  * change (the tree is small). Text inputs use 'change', not 'input', so a
  * re-render never yanks focus out from under someone mid-keystroke. */
-export function initMenu(root: HTMLElement, send: Send): void {
+export function initMenu(root: HTMLElement, send: Send, onReconnect: () => void): void {
   root.innerHTML = ''
   const app = el('div', 'app')
   root.appendChild(app)
 
-  store.subscribe((state) => render(app, state, send))
+  store.subscribe((state) => render(app, state, send, onReconnect))
 }
 
-function render(app: HTMLElement, state: ClientState, send: Send): void {
+function render(app: HTMLElement, state: ClientState, send: Send, onReconnect: () => void): void {
   // 'playing' hands the screen to Game's 3D canvas + the Hud overlay
   // (client/src/game.ts, ui/hud.ts) -- this app div must stop painting its
   // own opaque background and stop intercepting clicks/mousemove over it,
   // or it blocks pointer-lock and hides the canvas underneath.
   app.classList.toggle('app--playing', state.phase === 'playing')
   app.innerHTML = ''
-  app.appendChild(renderStatusBar(state))
+  app.appendChild(renderStatusBar(state, onReconnect))
 
   const screen =
     state.phase === 'menu'
@@ -58,7 +58,7 @@ function render(app: HTMLElement, state: ClientState, send: Send): void {
 
 // ---- status bar (connection + error banner, shown on every screen) --------
 
-function renderStatusBar(state: ClientState): HTMLElement {
+function renderStatusBar(state: ClientState, onReconnect: () => void): HTMLElement {
   const bar = el('div', 'status-bar')
   // Connection changes and server errors are announced to screen readers
   // without stealing focus.
@@ -80,8 +80,18 @@ function renderStatusBar(state: ClientState): HTMLElement {
   bar.append(dot, label)
 
   if (state.errorMessage) {
-    const err = el('span', 'status-error', state.errorMessage)
+    const pending = state.connectionStatus === 'reconnecting'
+    const err = el('span', `status-error${pending ? ' status-error--pending' : ''}`, state.errorMessage)
     bar.appendChild(err)
+  }
+
+  // The client already retries on its own timer, but a player watching a
+  // stalled bar should never have to reload the page to get another go --
+  // this skips the remaining backoff wait.
+  if (state.connectionStatus === 'reconnecting' || state.connectionStatus === 'disconnected') {
+    const retry = el('button', 'btn btn--tiny', 'Reconnect')
+    retry.addEventListener('click', onReconnect)
+    bar.appendChild(retry)
   }
 
   return bar
@@ -115,12 +125,18 @@ function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
   card.appendChild(nameRow)
 
   const actions = el('div', 'actions')
+  // Every action below needs a live socket -- without one the send is
+  // silently dropped, which reads as a dead button. Disable them and let
+  // the status bar explain why.
+  const offline = state.connectionStatus !== 'open'
 
   const quickPlayBtn = el('button', 'btn btn--primary', 'Quick Play')
+  quickPlayBtn.disabled = offline
   quickPlayBtn.addEventListener('click', () => send({ t: 'quick_play' }))
   actions.appendChild(quickPlayBtn)
 
   const createBtn = el('button', 'btn', 'Create Room')
+  createBtn.disabled = offline
   createBtn.addEventListener('click', () => send({ t: 'create_room' }))
   actions.appendChild(createBtn)
 
@@ -131,6 +147,7 @@ function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
   codeInput.placeholder = 'CODE'
   codeInput.setAttribute('aria-label', 'Room code')
   const joinBtn = el('button', 'btn', 'Join Room')
+  joinBtn.disabled = offline
   const doJoin = (): void => {
     const code = codeInput.value.trim().toUpperCase()
     if (code.length === 4) send({ t: 'join_room', code })

@@ -114,6 +114,12 @@ body {
   color: var(--danger);
 }
 
+/* A reconnect still in progress is not an error yet: it matches the amber
+   status dot, and red stays for the states that actually need attention. */
+.status-error--pending {
+  color: var(--warn);
+}
+
 .screen {
   flex: 1;
   display: flex;
@@ -269,6 +275,18 @@ body {
 
 .btn:active {
   transform: translateY(1px);
+}
+
+/* Status-bar sized button (the inline Reconnect action) -- small enough
+   not to grow that strip, but a real .btn so it keeps the shared hover,
+   disabled and focus-visible treatment. */
+.btn--tiny {
+  margin-left: 0.75rem;
+  padding: 0.15rem 0.6rem;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  border-radius: 4px;
 }
 
 .btn:disabled {

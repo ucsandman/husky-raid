@@ -50,7 +50,7 @@ Then open `http://localhost:8080`. The client connects back to whatever host, po
 
 The whole game is one Node process serving HTTP and WebSockets on a single port, so any Node host works.
 
-**Render (easiest):** this repo includes `render.yaml`. In the [Render dashboard](https://dashboard.render.com), choose New, then Blueprint, pick this repo, and deploy. You get a public `https://<name>.onrender.com` URL; the client connects back over `wss://` automatically, no configuration needed. The free plan sleeps after about 15 minutes idle (first visit then takes about a minute to wake); the starter plan stays warm.
+**Render (easiest):** this repo includes `render.yaml`. In the [Render dashboard](https://dashboard.render.com), choose New, then Blueprint, pick this repo, and deploy. You get a public `https://<name>.onrender.com` URL; the client connects back over `wss://` automatically, no configuration needed. The free plan sleeps after about 15 minutes idle (first visit then takes about a minute to wake); the starter plan stays warm. A sleeping server is not an error state for the player: the client keeps retrying for as long as the page is open, says "Server is waking up" while it waits, and connects itself the moment the server answers. There is also a Reconnect button in the status bar to skip the wait.
 
 **Any VPS or Node host:**
 

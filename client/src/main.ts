@@ -79,22 +79,35 @@ store.subscribe((state) => {
 let socketOpen = false
 let helloSentForSocket = false
 
-net.onStatus((status) => {
+/** Failed attempts before the status bar explains the wait. A free-tier
+ * server sleeps after ~15 min idle and takes about a minute to boot, so the
+ * first couple of failures are normal and not worth alarming anyone over. */
+const COLD_START_HINT_AFTER = 3
+
+net.onStatus((status, attempt) => {
   socketOpen = status === 'open'
   if (status === 'open') {
     helloSentForSocket = false
     store.set({ connectionStatus: status, errorMessage: null })
-  } else if (status === 'disconnected') {
+  } else if (status === 'connecting') {
+    store.set({ connectionStatus: status, errorMessage: null })
+  } else {
+    // The socket is gone, and the server keeps no session to resume into --
+    // a reconnect lands as a brand-new player with no room and no match. So
+    // drop back to the menu rather than leave a frozen scene on screen.
     store.set({
       connectionStatus: status,
-      errorMessage: 'Lost connection to the server. Refresh to try again.',
+      errorMessage:
+        status === 'disconnected'
+          ? 'You are offline. RIFTLANE reconnects by itself once your network is back.'
+          : attempt >= COLD_START_HINT_AFTER
+            ? 'Server is waking up. This can take up to a minute.'
+            : 'Connection lost. Reconnecting…',
       phase: 'menu',
       roomCode: null,
       hostId: null,
       players: [],
     })
-  } else {
-    store.set({ connectionStatus: status })
   }
 })
 
@@ -145,4 +158,4 @@ net.onMsg((msg: ServerMsg) => {
   }
 })
 
-initMenu(appRoot, guardedSend)
+initMenu(appRoot, guardedSend, () => net.retryNow())

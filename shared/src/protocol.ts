@@ -4,6 +4,7 @@ import type { Projectile } from './combat'
 
 export type ClientMsg =
   | { t: 'hello'; name: string }
+  | { t: 'ping' }
   | { t: 'create_room' }
   | { t: 'join_room'; code: string }
   | { t: 'quick_play' }
@@ -14,6 +15,7 @@ export type ClientMsg =
 
 export type ServerMsg =
   | { t: 'welcome'; playerId: string }
+  | { t: 'pong' }
   | { t: 'room'; code: string; players: { id: string; name: string; team: Team; bot: boolean }[]; hostId: string }
   | { t: 'queue'; position: number }
   | {

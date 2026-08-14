@@ -75,3 +75,19 @@ Materials and their textures are owned by one per-match `MaterialLibrary` create
 ## 2026-08-14: 60fps target verified under a full 8-player bot match
 
 Measured on the dev box (Windows 11, headed Chromium via agent-browser, vite dev build, ~2529x1221 canvas): a live Quick Play match (1 human + 7 bots, active combat, flags being capped) sampled twice with an rAF frame-time probe -- 3595 frames over 15s and a 10s repeat. Median frame 4.2ms, p99 4.3ms, worst 8.4ms, zero frames over the 16.7ms 60fps budget. rAF ran unthrottled (~240fps average), so these are true full-frame costs (sim + render), giving roughly 2-4x headroom against 60fps before any production-build minification. Follow-up closed; no rendering optimization warranted at current scene cost (see draw-call budget entry above).
+
+## 2026-08-14: Client reconnects for as long as the page is open, instead of a fixed attempt budget
+
+The client used to give up after 3 attempts over ~6 seconds and tell the player to refresh. That budget cannot outlast the ~60s cold start of the free Render plan this repo deploys to, so the one failure mode the deployment actually has was also the one the client could not survive. Replaced with exponential backoff (1s doubling to a 10s cap, plus jitter so several tabs don't retry in lockstep) that keeps going indefinitely while the page is open.
+
+`disconnected` now means only "the browser reports no network", and even that recovers on its own from the `online` event. `reconnecting` is the state for everything else, and it is amber, not red -- matching what DESIGN.md already said those two colors mean. Returning to a backgrounded tab also triggers an immediate attempt rather than waiting out a throttled timer.
+
+Rejected: a larger fixed attempt count. Any finite budget is a guess about how long the server may be gone, and the honest answer for a sleeping free instance is "longer than you think". A player who has closed the tab costs nothing; a player staring at a dead end costs the session.
+
+## 2026-08-14: Keepalive in both directions, app-level one way and control frames the other
+
+Client to server is an app-level `{t:'ping'}` / `{t:'pong'}` pair every 25s, because browser JavaScript cannot send WebSocket control frames. The server answers it *before* the hello gate: the client defers `hello` until the player's first action, so a socket sitting on the menu pings while still anonymous, and it must not be told "first message must be hello". A ping never assigns a playerId.
+
+Server to client is a real `ws.ping()` sweep every 30s; browsers auto-answer it with no client code involved. A socket that misses one sweep is terminated, which is what makes `lobby.disconnect` run for a player whose network vanished without a TCP FIN instead of holding their match slot until the OS gives up.
+
+The client also treats total silence for 60s as a dead socket and replaces it, rather than sitting on a black-holed connection: pongs land every 25s and a live match sends snapshots 20x a second, so silence that long is never normal.

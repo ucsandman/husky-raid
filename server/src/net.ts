@@ -25,7 +25,14 @@ const MIME: Record<string, string> = {
  * (tests booting on an ephemeral port via startServer(0)) can read the real
  * bound port off the result -- `server.listen(0)` only assigns a port
  * asynchronously, there's no synchronous way to know it beforehand. */
-export function startServer(port: number): Promise<{ close(): void; port: number }> {
+/** Server->client liveness sweep. A socket that misses one sweep is
+ * half-open (the peer vanished without a TCP FIN -- laptop lid, dead wifi,
+ * proxy drop) and gets terminated so the lobby stops holding a ghost
+ * player in a room or a live match. Browsers answer these pings
+ * automatically; no client code is involved. */
+const HEARTBEAT_MS = 30_000
+
+export function startServer(port: number, heartbeatMs = HEARTBEAT_MS): Promise<{ close(): void; port: number }> {
   const lobby = new Lobby()
 
   const server = createServer((req, res) => {
@@ -36,7 +43,24 @@ export function startServer(port: number): Promise<{ close(): void; port: number
   })
 
   const wss = new WS.WebSocketServer({ server })
-  wss.on('connection', (ws: WS.WebSocket) => handleConnection(ws, lobby))
+  const alive = new WeakSet<WS.WebSocket>()
+
+  wss.on('connection', (ws: WS.WebSocket) => {
+    alive.add(ws)
+    ws.on('pong', () => alive.add(ws))
+    handleConnection(ws, lobby)
+  })
+
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!alive.has(ws)) {
+        ws.terminate()
+        continue
+      }
+      alive.delete(ws)
+      ws.ping()
+    }
+  }, heartbeatMs)
 
   return new Promise((resolve) => {
     server.listen(port, () => {
@@ -45,6 +69,7 @@ export function startServer(port: number): Promise<{ close(): void; port: number
       resolve({
         port: boundPort,
         close(): void {
+          clearInterval(heartbeat)
           lobby.stop()
           wss.close()
           server.close()
@@ -125,6 +150,15 @@ function handleConnection(ws: WS.WebSocket, lobby: Lobby): void {
       msg = JSON.parse(data.toString())
     } catch {
       send({ t: 'error', message: 'malformed JSON' })
+      return
+    }
+
+    // Keepalive, answered before the hello gate below: the client starts its
+    // heartbeat as soon as the socket opens but holds `hello` back until the
+    // player's first action, so a menu-idle socket pings while still
+    // anonymous. Never assigns a playerId.
+    if (msg.t === 'ping') {
+      send({ t: 'pong' })
       return
     }
 
