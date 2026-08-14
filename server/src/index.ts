@@ -6,5 +6,6 @@ process.on('unhandledRejection', (reason) => {
 })
 
 const port = Number(process.env.PORT) || 8080
-startServer(port)
-console.log(`riftlane server listening on :${port}`)
+startServer(port).then(() => {
+  console.log(`riftlane server listening on :${port}`)
+})

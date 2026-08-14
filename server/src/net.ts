@@ -21,7 +21,11 @@ const MIME: Record<string, string> = {
   '.glb': 'model/gltf-binary',
 }
 
-export function startServer(port: number): { close(): void } {
+/** Starts the server and resolves once it is actually listening, so callers
+ * (tests booting on an ephemeral port via startServer(0)) can read the real
+ * bound port off the result -- `server.listen(0)` only assigns a port
+ * asynchronously, there's no synchronous way to know it beforehand. */
+export function startServer(port: number): Promise<{ close(): void; port: number }> {
   const lobby = new Lobby()
 
   const server = createServer((req, res) => {
@@ -34,15 +38,20 @@ export function startServer(port: number): { close(): void } {
   const wss = new WS.WebSocketServer({ server })
   wss.on('connection', (ws: WS.WebSocket) => handleConnection(ws, lobby))
 
-  server.listen(port)
-
-  return {
-    close(): void {
-      lobby.stop()
-      wss.close()
-      server.close()
-    },
-  }
+  return new Promise((resolve) => {
+    server.listen(port, () => {
+      const address = server.address()
+      const boundPort = address && typeof address === 'object' ? address.port : port
+      resolve({
+        port: boundPort,
+        close(): void {
+          lobby.stop()
+          wss.close()
+          server.close()
+        },
+      })
+    })
+  })
 }
 
 async function handleHttp(req: IncomingMessage, res: ServerResponse, lobby: Lobby): Promise<void> {
