@@ -1,5 +1,6 @@
 import type { ClientMsg, Team } from '@riftlane/shared'
 import { store, saveSettings, DEFAULT_SENSITIVITY, type ClientState, type RosterPlayer } from '../state'
+import { audioEngine } from '../audio'
 
 const TEAM_COLOR: Record<Team, string> = { 0: 'var(--cobalt)', 1: 'var(--ember)' }
 const TEAM_NAME: Record<Team, string> = { 0: 'Cobalt', 1: 'Ember' }
@@ -14,6 +15,9 @@ function el<K extends keyof HTMLElementTagNameMap>(
   const node = document.createElement(tag)
   if (className) node.className = className
   if (text !== undefined) node.textContent = text
+  // Every menu button gets a click sound for free -- one wiring point
+  // instead of one at each of the ~9 button call sites below.
+  if (tag === 'button') node.addEventListener('click', () => audioEngine.play('ui_click'))
   return node
 }
 

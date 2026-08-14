@@ -4,11 +4,36 @@ import { InputManager } from './input'
 import { Game } from './game'
 import { store, type Phase } from './state'
 import { initMenu } from './ui/menu'
+import { audioEngine, ALL_SOUND_NAMES } from './audio'
 import './ui/style.css'
 
 const SERVER_URL = `ws://${location.hostname}:8080`
 // Server snapshots at 20Hz -- log once a second instead of flooding the console.
 const SNAPSHOT_LOG_INTERVAL = 20
+
+// Dev-only manual audio smoke test for Task 16's browser pass: run
+// window.__riftlaneAudioTest() in the console to hear every synthesized
+// sound once, back to back.
+declare global {
+  interface Window {
+    __riftlaneAudioTest?: () => void
+  }
+}
+window.__riftlaneAudioTest = () => {
+  audioEngine.init()
+  ALL_SOUND_NAMES.forEach((name, i) => setTimeout(() => audioEngine.play(name), i * 500))
+}
+
+// AudioContext must start inside a user-gesture handler -- this fires on
+// the first pointerdown anywhere (pointer-lock click on the canvas or any
+// menu button both qualify) and is a no-op on every gesture after the
+// first (init() is idempotent).
+document.addEventListener('pointerdown', () => audioEngine.init(), { once: true, capture: true })
+
+// Wired to settings.volume (state.ts, persisted to localStorage) --
+// unconditional so a volume-only change (which doesn't touch state.phase)
+// still reaches it, unlike the phase-gated subscriber below.
+store.subscribe((state) => audioEngine.setVolume(state.settings.volume))
 
 const appRoot = document.getElementById('app')
 const canvas = document.getElementById('game-canvas')

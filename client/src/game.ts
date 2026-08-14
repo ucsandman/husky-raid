@@ -10,6 +10,7 @@ import type { InputManager } from './input'
 import type { Net } from './net'
 import { ClientPrediction } from './predict'
 import { Hud } from './ui/hud'
+import { audioEngine, type SoundName } from './audio'
 
 type MatchStartMsg = Extract<ServerMsg, { t: 'match_start' }>
 type SnapshotMsg = Extract<ServerMsg, { t: 'snapshot' }>
@@ -20,6 +21,29 @@ const KICK_DEPTH = 0.08
 const BOB_AMP_Y = 0.015
 const BOB_AMP_X = 0.01
 const MAX_DT = 0.1
+
+// Audio-only heuristics: teleport/launchpad have no SimEvent on the wire, so
+// both are detected by diffing raw player state between consecutive
+// snapshots in playSnapshotAudio() below.
+const TELEPORT_JUMP_DIST = 5 // meters/snapshot; teleporter endpoints in maps/*.ts are 20-36m apart, normal per-snapshot travel is well under 2m
+const LAUNCH_VEL_Y_THRESHOLD = 8.5 // just above JUMP_SPEED (8); launchpad velocities in maps/*.ts start at 9
+
+const WEAPON_SOUND: Record<WeaponId, SoundName> = {
+  pulse_smg: 'shot_smg',
+  sidearm: 'shot_smg',
+  triad_rifle: 'shot_rifle',
+  scattergun: 'shot_rifle',
+  railspike: 'shot_rail',
+  ion_charger: 'shot_rail',
+  boomtube: 'shot_boom',
+  swarm_pod: 'shot_boom',
+  arc_blade: 'blade_lunge',
+  grav_maul: 'melee_swing',
+}
+
+function eyePos(pos: Vec3): Vec3 {
+  return { x: pos.x, y: pos.y + EYE_HEIGHT, z: pos.z }
+}
 
 /**
  * Owns the render loop for one match: builds scene/map/soldiers on
@@ -88,8 +112,69 @@ export class Game {
   }
 
   onSnapshot(msg: SnapshotMsg): void {
+    const prevSnap = this.latestSnapshot
     this.latestSnapshot = msg
     this.prediction.onSnapshot(msg)
+    this.playSnapshotAudio(msg, prevSnap)
+  }
+
+  /**
+   * Fires SFX for one snapshot's worth of server events -- called once per
+   * incoming snapshot (not once per render frame like tick() below, which
+   * re-reads the same latestSnapshot across ~3 frames per 20Hz snapshot;
+   * that repeat-read is fine for pooled visual effects but would
+   * triple-fire every sound). kill/capture/flag_taken/explosion/shot come
+   * straight off SimEvent. shield_hit/shield_break/teleport/launchpad have
+   * no SimEvent on the wire, so they're detected by diffing this
+   * snapshot's raw players against the previous one -- same heuristic
+   * shape as Task 12's shield_break spark (tick()'s prevShields diff
+   * below), reimplemented here against raw snapshot pairs instead of a
+   * persistent per-frame map, since positional audio doesn't need the
+   * eye-height-adjusted render pos tick() uses for spark placement.
+   * LIMITATION: a big misprediction-correction snap or a repulsor/grapple
+   * knockback that happens to clear the distance/velocity threshold can
+   * mis-fire teleport/launchpad -- acceptable since this is cosmetic-only
+   * client audio with no effect on sim state.
+   */
+  private playSnapshotAudio(msg: SnapshotMsg, prevSnap: SnapshotMsg | null): void {
+    const localRaw = msg.players.find((p) => p.id === this.localId)
+    const listener = localRaw ? { pos: eyePos(localRaw.pos), yaw: localRaw.yaw } : undefined
+
+    for (const ev of msg.events) {
+      if (ev.type === 'shot') {
+        const shooter = msg.players.find((p) => p.id === ev.playerId)
+        audioEngine.play(WEAPON_SOUND[ev.weapon], shooter ? { pos: eyePos(shooter.pos), listener } : undefined)
+      } else if (ev.type === 'explosion') {
+        audioEngine.play('explosion', { pos: ev.pos, listener })
+      } else if (ev.type === 'kill') {
+        const victim = msg.players.find((p) => p.id === ev.victimId)
+        audioEngine.play('death', victim ? { pos: eyePos(victim.pos), listener } : undefined)
+      } else if (ev.type === 'capture') {
+        audioEngine.play('capture')
+      } else if (ev.type === 'flag_taken') {
+        audioEngine.play('flag_taken')
+      }
+    }
+
+    if (!prevSnap) return
+    const prevById = new Map(prevSnap.players.map((p) => [p.id, p]))
+    for (const p of msg.players) {
+      const prev = prevById.get(p.id)
+      if (!prev || !p.alive) continue
+
+      if (p.shield < prev.shield) {
+        const opts = { pos: eyePos(p.pos), listener }
+        if (p.shield <= 0 && prev.shield > 0) audioEngine.play('shield_break', opts)
+        else audioEngine.play('shield_hit', opts)
+      }
+
+      const dist = Math.hypot(p.pos.x - prev.pos.x, p.pos.y - prev.pos.y, p.pos.z - prev.pos.z)
+      if (dist > TELEPORT_JUMP_DIST) {
+        audioEngine.play('teleport', { pos: eyePos(p.pos), listener })
+      } else if (p.vel.y > LAUNCH_VEL_Y_THRESHOLD && prev.vel.y <= LAUNCH_VEL_Y_THRESHOLD) {
+        audioEngine.play('launchpad', { pos: eyePos(p.pos), listener })
+      }
+    }
   }
 
   private readonly loop = (now: number): void => {
@@ -239,6 +324,7 @@ export class Game {
     ctx?.dispose()
     this.hud?.dispose()
     this.hud = null
+    audioEngine.dispose()
 
     this.sceneCtx = null
     this.mapGroup = null
