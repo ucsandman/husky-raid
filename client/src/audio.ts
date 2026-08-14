@@ -111,6 +111,9 @@ class AudioEngine {
     src.buffer = buffer
     src.playbackRate.value = 1 + (Math.random() * 2 - 1) * 0.05
 
+    let gain: GainNode | undefined
+    let panner: StereoPannerNode | undefined
+
     if (opts?.pos && opts.listener) {
       const { pos, listener } = opts
       const dx = pos.x - listener.pos.x
@@ -118,21 +121,39 @@ class AudioEngine {
       const dist = Math.hypot(dx, dz, pos.y - listener.pos.y)
       if (dist > MAX_DISTANCE) return
 
-      const gain = ctx.createGain()
+      gain = ctx.createGain()
       gain.gain.value = Math.max(0, 1 - dist / MAX_DISTANCE)
-      const panner = ctx.createStereoPanner()
+      panner = ctx.createStereoPanner()
       const horizDist = Math.hypot(dx, dz)
-      // Equal-power-ish pan from the listener-relative angle: project the
-      // offset onto the listener's right vector (forward = (sin yaw, cos
-      // yaw) per sim.ts's viewDir convention, right = forward rotated -90).
+      // physics.ts's rightVec (forward x up, right-handed, up=+y) for
+      // yaw psi is (-cos psi, 0, sin psi) -- NOT forward rotated -90 (that
+      // was wrong; forward rotated -90 is +cos psi, -sin psi, the mirror
+      // image, which inverted every pan). Project the listener-relative
+      // offset (dx, dz) onto that exact vector: pan = dot((dx,dz),
+      // (-cos psi, sin psi)) / horizDist.
+      // Sanity check: yaw=0 (facing +z), source at dx=+5, dz=0 ->
+      // pan = (5*-1 + 0*0) / 5 = -1 = hard left. Correct: facing +z with
+      // up=+y, +x is to your left (right-handed frame puts "right" at -x).
       panner.pan.value =
-        horizDist > 0.001 ? clamp((dx * Math.cos(listener.yaw) - dz * Math.sin(listener.yaw)) / horizDist, -1, 1) : 0
+        horizDist > 0.001
+          ? clamp((dx * -Math.cos(listener.yaw) + dz * Math.sin(listener.yaw)) / horizDist, -1, 1)
+          : 0
 
       src.connect(gain)
       gain.connect(panner)
       panner.connect(master)
     } else {
       src.connect(master)
+    }
+
+    // Explicit lifecycle: disconnect every node this play() created the
+    // moment playback finishes, instead of relying on the spec's implicit
+    // "an unreachable, silent AudioNode is eventually GC'd" behavior --
+    // cheap, and it means a leak here is a bug, not just delayed GC.
+    src.onended = () => {
+      src.disconnect()
+      gain?.disconnect()
+      panner?.disconnect()
     }
 
     src.start()
