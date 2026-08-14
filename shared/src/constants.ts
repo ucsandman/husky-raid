@@ -40,12 +40,16 @@ export const PLAYER_BODY_RADIUS = 0.5
 export const PLAYER_HEAD_CENTER_Y = 1.55
 export const PLAYER_HEAD_RADIUS = 0.25
 
-// Combat: grenades (not weapons, so not in WEAPONS table)
+// Combat: grenades (not weapons, so not in WEAPONS table). Stick/pop damage
+// numbers (mag 110 dmg on stick, swarm-pod 80 dmg pop) aren't defined here:
+// applyDamage/explode take damage as a caller-supplied argument, and no
+// function in this task actually applies those two, so a constant for them
+// would have zero callers today. Add them (from the design spec's weapon
+// roster) alongside whichever future task wires the damage application.
 export const FRAG_DAMAGE = 90
 export const FRAG_RADIUS = 4
 export const FRAG_FUSE = 2
 export const FRAG_BOUNCE_DAMPING = 0.5
-export const MAG_DAMAGE = 110
 export const MAG_FUSE = 1.5
 
 // Combat: projectile homing (swarm_pod; also available to ion_charger's
@@ -53,6 +57,5 @@ export const MAG_FUSE = 1.5
 // on ion_charge projectiles at spawn time)
 export const HOMING_TURN_RATE = 4 // rad/s
 
-// Combat: swarm pod stick-pop bonus
+// Combat: swarm pod stick-pop threshold
 export const SWARM_POP_THRESHOLD = 6
-export const SWARM_POP_DAMAGE = 80

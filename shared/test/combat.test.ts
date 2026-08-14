@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { AABB } from '../src/types'
 import { normalize } from '../src/math'
-import { TICK_DT, MAX_SHIELD, MAX_HEALTH, FRAG_DAMAGE, FRAG_RADIUS } from '../src/constants'
+import { TICK_DT, MAX_SHIELD, MAX_HEALTH, FRAG_DAMAGE, FRAG_RADIUS, FRAG_FUSE, MAG_FUSE } from '../src/constants'
 import { WEAPONS, WEAPON_POOL, rollLoadout } from '../src/weapons'
 import {
   applyDamage,
@@ -196,7 +196,7 @@ describe('mag grenade', () => {
       vel: { x: 0, y: 0, z: 0 },
       ownerId: 'shooter',
       team: 0,
-      fuseAt: 1.5,
+      fuseAt: MAG_FUSE,
     }
 
     const r1 = stepProjectile(mag, [target], [], TICK_DT, 0)
@@ -208,7 +208,28 @@ describe('mag grenade', () => {
     expect(r2.exploded).toBe(false)
     expect(mag.pos).toEqual(target.pos)
 
-    const r3 = stepProjectile(mag, [target], [], TICK_DT, 1.5)
+    const r3 = stepProjectile(mag, [target], [], TICK_DT, MAG_FUSE)
     expect(r3.exploded).toBe(true)
+  })
+})
+
+describe('frag grenade', () => {
+  it('falls under gravity and explodes when its fuse expires', () => {
+    const frag: Projectile = {
+      id: 1,
+      kind: 'frag',
+      pos: { x: 0, y: 1, z: 0 },
+      vel: { x: 0, y: 0, z: 5 },
+      ownerId: 'thrower',
+      team: 0,
+      fuseAt: FRAG_FUSE,
+    }
+
+    const early = stepProjectile(frag, [], [], TICK_DT, 0)
+    expect(early.exploded).toBe(false)
+    expect(frag.vel.y).toBeLessThan(0) // gravity applied
+
+    const late = stepProjectile(frag, [], [], TICK_DT, FRAG_FUSE)
+    expect(late.exploded).toBe(true)
   })
 })
