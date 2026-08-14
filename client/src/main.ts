@@ -1,7 +1,8 @@
 import type { ClientMsg, ServerMsg } from '@riftlane/shared'
 import { connect } from './net'
 import { InputManager } from './input'
-import { store } from './state'
+import { Game } from './game'
+import { store, type Phase } from './state'
 import { initMenu } from './ui/menu'
 import './ui/style.css'
 
@@ -14,12 +15,26 @@ const canvas = document.getElementById('game-canvas')
 if (!appRoot) throw new Error('missing #app root')
 if (!(canvas instanceof HTMLCanvasElement)) throw new Error('missing #game-canvas')
 
-// Wired up here so pointer-lock + key capture are live for Task 12's game
-// loop to call .sample() on; nothing drives a render loop with it yet since
-// there's no 3D scene in this task.
-new InputManager(canvas, () => store.state.settings.sensitivity)
+const inputManager = new InputManager(canvas, () => store.state.settings.sensitivity)
 
 const net = connect(SERVER_URL)
+const game = new Game(canvas, inputManager, net)
+
+// The canvas is pointer-events:none by default (style.css) so it can't
+// steal clicks from the menu overlay. Flip it on only while actually
+// playing, and tear the scene down + release pointer lock the moment we
+// leave that phase (menu screen after 'leave', or match_end -> rematch
+// declined) so a stale render loop doesn't keep sending input frames.
+let lastPhase: Phase | null = null
+store.subscribe((state) => {
+  if (state.phase === lastPhase) return
+  canvas.style.pointerEvents = state.phase === 'playing' ? 'auto' : 'none'
+  if (lastPhase === 'playing' && state.phase !== 'playing') {
+    game.teardown()
+    if (document.pointerLockElement === canvas) document.exitPointerLock()
+  }
+  lastPhase = state.phase
+})
 
 // The server requires `hello` as the literal first message on every socket
 // (reconnects included) and identifies the player by whatever name it
@@ -76,11 +91,13 @@ net.onMsg((msg: ServerMsg) => {
         players: msg.players,
         snapshotCount: 0,
       })
+      game.start(msg)
       console.log('[riftlane] match_start', msg)
       break
     case 'snapshot': {
       const count = store.state.snapshotCount + 1
       store.set({ snapshotCount: count })
+      game.onSnapshot(msg)
       if (count % SNAPSHOT_LOG_INTERVAL === 0) console.log(`[riftlane] snapshots received: ${count}`)
       break
     }
