@@ -56,3 +56,29 @@ export const HOMING_TURN_RATE = 4 // rad/s
 // Combat: swarm pod stick-pop bonus
 export const SWARM_POP_THRESHOLD = 6
 export const SWARM_POP_DAMAGE = 80
+
+// Combat: mag grenade splash radius (sticks to a player, then explodes;
+// no radius constant existed for it — added per Task 6).
+export const MAG_RADIUS = 3
+
+// Sim: CTF flag interaction distances.
+export const FLAG_PICKUP_RADIUS = 1.5
+export const CAPTURE_RADIUS = 2
+
+// Sim: basic melee + power-melee weapons (arc_blade/grav_maul) only land
+// on targets within this forward-facing cone, in radians (60 degrees).
+export const MELEE_VIEW_CONE = Math.PI / 3
+
+// Sim: grenade throw muzzle velocity.
+export const GRENADE_THROW_SPEED = 18
+
+// Sim: grapple pulls the player toward the raycast hit point at a speed
+// proportional to distance (closes the gap in ~1 tick), capped here.
+export const GRAPPLE_MAX_SPEED = 30
+
+// Sim: repulsor's own re-activation cooldown (separate from GRAPPLE_COOLDOWN).
+export const REPULSOR_COOLDOWN = 3
+
+// Sim: respawn picks the spawn point with the fewest live players within
+// this radius, to avoid spawning on top of teammates.
+export const SPAWN_CROWD_RADIUS = 2

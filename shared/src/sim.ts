@@ -1,0 +1,669 @@
+import type { Vec3, PlayerState, PlayerInput, Team, WeaponId, EquipmentId } from './types'
+import type { GameMap } from './map'
+import { MAPS } from './maps'
+import { add, sub, scale, dot, normalize, length, distSq } from './math'
+import { stepMovement } from './physics'
+import {
+  applyDamage,
+  tickShield,
+  raycast,
+  stepProjectile,
+  explode,
+  checkSwarmPop,
+  type Projectile,
+} from './combat'
+import { WEAPONS, rollLoadout } from './weapons'
+import { mulberry32 } from './rng'
+import {
+  TICK_DT,
+  MAX_SHIELD,
+  MAX_HEALTH,
+  EYE_HEIGHT,
+  MELEE_DAMAGE,
+  MELEE_RANGE,
+  MELEE_COOLDOWN,
+  MELEE_VIEW_CONE,
+  RESPAWN_DELAY,
+  FLAG_RETURN_TIME,
+  FLAG_PICKUP_RADIUS,
+  CAPTURE_RADIUS,
+  CAPTURES_TO_WIN,
+  MATCH_TIME,
+  CAMO_DURATION,
+  GRAPPLE_RANGE,
+  GRAPPLE_CHARGES,
+  GRAPPLE_COOLDOWN,
+  GRAPPLE_MAX_SPEED,
+  REPULSOR_CHARGES,
+  REPULSOR_RADIUS,
+  REPULSOR_IMPULSE,
+  REPULSOR_COOLDOWN,
+  GRENADE_THROW_SPEED,
+  FRAG_DAMAGE,
+  FRAG_RADIUS,
+  FRAG_FUSE,
+  MAG_DAMAGE,
+  MAG_RADIUS,
+  MAG_FUSE,
+  SWARM_POP_DAMAGE,
+  SPAWN_CROWD_RADIUS,
+} from './constants'
+
+export interface FlagState {
+  state: 'stand' | 'carried' | 'dropped'
+  pos: Vec3
+  carrierId?: string
+  droppedAt?: number
+}
+
+export type SimEvent =
+  | { type: 'kill'; killerId: string; victimId: string; weapon: string }
+  | { type: 'capture'; playerId: string; team: Team }
+  | { type: 'flag_taken' | 'flag_dropped' | 'flag_returned'; team: Team; playerId?: string }
+  | { type: 'shot'; playerId: string; weapon: WeaponId }
+  | { type: 'explosion'; pos: Vec3 }
+  | { type: 'match_end'; winner: Team | null }
+
+function defaultInput(p: PlayerState): PlayerInput {
+  return {
+    seq: 0,
+    dt: TICK_DT,
+    yaw: p.yaw,
+    pitch: p.pitch,
+    forward: 0,
+    strafe: 0,
+    jump: false,
+    fire: false,
+    melee: false,
+    grenade: false,
+    equipment: false,
+    swap: false,
+  }
+}
+
+function viewDir(yaw: number, pitch: number): Vec3 {
+  return normalize({
+    x: Math.sin(yaw) * Math.cos(pitch),
+    y: Math.sin(pitch),
+    z: Math.cos(yaw) * Math.cos(pitch),
+  })
+}
+
+function eyePos(p: PlayerState): Vec3 {
+  return { x: p.pos.x, y: p.pos.y + EYE_HEIGHT, z: p.pos.z }
+}
+
+function equipmentChargesFor(eq: EquipmentId | null): number {
+  if (eq === 'grapple') return GRAPPLE_CHARGES
+  if (eq === 'repulsor') return REPULSOR_CHARGES
+  return 0
+}
+
+/**
+ * MatchSim: the deterministic CTF simulation. Both the server (authority)
+ * and the client (prediction/replay) drive the exact same tick() function,
+ * so it must be a pure function of (current state, inputs, now) — no
+ * Math.random, no Date.now, no non-deterministic Map/Set iteration.
+ *
+ * tick() order, in one pass per call:
+ *   1. respawns due
+ *   2. per player: movement -> fire -> grenade throw -> equipment
+ *   3. projectiles step + explosions
+ *   4. shield recharge
+ *   5. flags (pickup / instant return / auto-return / capture)
+ *   6. timers (match end)
+ */
+export class MatchSim {
+  map: GameMap
+  players: Map<string, PlayerState> = new Map()
+  projectiles: Projectile[] = []
+  flags: [FlagState, FlagState]
+  scores: [number, number] = [0, 0]
+  timeLeft: number = MATCH_TIME
+  phase: 'playing' | 'ended' = 'playing'
+
+  private rand: () => number
+  private inputs: Map<string, PlayerInput> = new Map()
+  private lastGroundedPos: Map<string, Vec3> = new Map()
+  private nextProjectileId = 0
+  private now = 0
+
+  constructor(mapName: string, seed: number) {
+    const map = MAPS[mapName]
+    if (!map) throw new Error(`unknown map: ${mapName}`)
+    this.map = map
+    this.rand = mulberry32(seed)
+    this.flags = [
+      { state: 'stand', pos: { ...map.flagStands[0] } },
+      { state: 'stand', pos: { ...map.flagStands[1] } },
+    ]
+  }
+
+  addPlayer(id: string, name: string, team: Team, bot: boolean): PlayerState {
+    const loadout = rollLoadout(this.rand)
+    const spawn = this.leastCrowdedSpawn(team)
+    const p: PlayerState = {
+      id,
+      name,
+      team,
+      bot,
+      pos: { ...spawn },
+      vel: { x: 0, y: 0, z: 0 },
+      yaw: this.map.spawnYaw[team],
+      pitch: 0,
+      grounded: true,
+      shield: MAX_SHIELD,
+      health: MAX_HEALTH,
+      alive: true,
+      respawnAt: 0,
+      lastDamageAt: 0,
+      weapons: loadout.weapons,
+      activeWeapon: 0,
+      ammo: [WEAPONS[loadout.weapons[0]].magSize, WEAPONS[loadout.weapons[1]].magSize],
+      cooldownUntil: 0,
+      grenades: loadout.grenades,
+      equipment: loadout.equipment,
+      equipmentCharges: equipmentChargesFor(loadout.equipment),
+      equipmentCooldownUntil: 0,
+      camoUntil: 0,
+      carryingFlag: null,
+      stuckDarts: 0,
+      kills: 0,
+      deaths: 0,
+      captures: 0,
+      teleportCooldownUntil: 0,
+    }
+    this.players.set(id, p)
+    this.lastGroundedPos.set(id, { ...spawn })
+    return p
+  }
+
+  removePlayer(id: string): void {
+    const p = this.players.get(id)
+    if (p && p.carryingFlag !== null) {
+      const flag = this.flags[p.carryingFlag]
+      flag.state = 'stand'
+      flag.pos = { ...this.map.flagStands[p.carryingFlag] }
+      flag.carrierId = undefined
+      flag.droppedAt = undefined
+    }
+    this.players.delete(id)
+    this.inputs.delete(id)
+    this.lastGroundedPos.delete(id)
+  }
+
+  setInput(id: string, input: PlayerInput): void {
+    this.inputs.set(id, input)
+  }
+
+  /** Not part of the public API surface documented in the task brief, but
+   * left accessible so stepFire/stepGrenade (module-private free functions
+   * below) can allocate projectile ids. */
+  nextId(): number {
+    return this.nextProjectileId++
+  }
+
+  /**
+   * Test-only hook: applies damage at the sim's current time (the `now`
+   * from the most recent tick()), running the same death bookkeeping a
+   * combat kill would (respawn timer, flag drop). Returns any events the
+   * death produced (e.g. flag_dropped) since it runs outside tick().
+   */
+  damage(id: string, amount: number): SimEvent[] {
+    const p = this.players.get(id)
+    if (!p) return []
+    const events: SimEvent[] = []
+    const result = applyDamage(p, amount, this.now)
+    if (result === 'killed') {
+      this.killPlayer(p, this.now, null, 'test', { ...p.pos }, events)
+    }
+    return events
+  }
+
+  tick(now: number): SimEvent[] {
+    if (this.phase === 'ended') return []
+    this.now = now
+    const events: SimEvent[] = []
+    const dt = TICK_DT
+
+    // 1. respawns due
+    for (const p of this.players.values()) {
+      if (!p.alive && now >= p.respawnAt) {
+        this.respawnPlayer(p)
+      }
+    }
+
+    // 2. per player: movement -> fire -> grenade -> equipment
+    for (const p of this.players.values()) {
+      if (!p.alive) continue
+      const input = this.inputs.get(p.id) ?? defaultInput(p)
+
+      if (p.grounded) this.lastGroundedPos.set(p.id, { ...p.pos })
+
+      const moveResult = stepMovement(p, input, this.map, dt)
+      if (moveResult === 'fell') {
+        const dropPos = this.lastGroundedPos.get(p.id) ?? { ...p.pos }
+        this.killPlayer(p, now, null, 'fall', dropPos, events)
+        continue
+      }
+
+      stepFire(this, p, input, now, events)
+      stepGrenade(this, p, input, now)
+      stepEquipment(this, p, input, now)
+    }
+
+    // 3. projectiles step + explosions
+    this.projectiles = this.projectiles.filter((pr) => {
+      const result = stepProjectile(pr, [...this.players.values()], this.map.boxes, dt, now)
+      if (result.exploded) {
+        explodeProjectile(this, pr, result.hitPlayerId, now, events)
+        return false
+      }
+      return true
+    })
+
+    // 4. shield recharge
+    for (const p of this.players.values()) {
+      if (p.alive) tickShield(p, now, dt)
+    }
+
+    // 5. flags
+    stepFlags(this, now, events)
+
+    // 6. timers
+    this.timeLeft = Math.max(0, this.timeLeft - dt)
+    if (this.scores[0] >= CAPTURES_TO_WIN || this.scores[1] >= CAPTURES_TO_WIN || this.timeLeft <= 0) {
+      this.phase = 'ended'
+      const winner: Team | null =
+        this.scores[0] === this.scores[1] ? null : this.scores[0] > this.scores[1] ? 0 : 1
+      events.push({ type: 'match_end', winner })
+    }
+
+    return events
+  }
+
+  /** Not part of the public API surface documented in the task brief, but
+   * left accessible (no `private`) so stepFire/stepFlags/stepEquipment
+   * (module-private free functions below) can call it directly. */
+  killPlayer(
+    victim: PlayerState,
+    now: number,
+    killerId: string | null,
+    weapon: string,
+    dropPos: Vec3,
+    events: SimEvent[]
+  ): void {
+    victim.alive = false
+    victim.deaths += 1
+    victim.respawnAt = now + RESPAWN_DELAY
+    const finalKillerId = killerId ?? victim.id
+    if (killerId && killerId !== victim.id) {
+      const killer = this.players.get(killerId)
+      if (killer) killer.kills += 1
+    }
+    events.push({ type: 'kill', killerId: finalKillerId, victimId: victim.id, weapon })
+    if (victim.carryingFlag !== null) {
+      const flagTeam = victim.carryingFlag
+      victim.carryingFlag = null
+      const flag = this.flags[flagTeam]
+      flag.state = 'dropped'
+      flag.pos = { ...dropPos }
+      flag.carrierId = undefined
+      flag.droppedAt = now
+      events.push({ type: 'flag_dropped', team: flagTeam, playerId: victim.id })
+    }
+  }
+
+  private respawnPlayer(p: PlayerState): void {
+    const loadout = rollLoadout(this.rand)
+    const spawn = this.leastCrowdedSpawn(p.team)
+    p.pos = { ...spawn }
+    p.vel = { x: 0, y: 0, z: 0 }
+    p.yaw = this.map.spawnYaw[p.team]
+    p.pitch = 0
+    p.grounded = true
+    p.shield = MAX_SHIELD
+    p.health = MAX_HEALTH
+    p.alive = true
+    p.weapons = loadout.weapons
+    p.activeWeapon = 0
+    p.ammo = [WEAPONS[loadout.weapons[0]].magSize, WEAPONS[loadout.weapons[1]].magSize]
+    p.cooldownUntil = 0
+    p.grenades = loadout.grenades
+    p.equipment = loadout.equipment
+    p.equipmentCharges = equipmentChargesFor(loadout.equipment)
+    p.equipmentCooldownUntil = 0
+    p.camoUntil = 0
+    p.stuckDarts = 0
+    p.teleportCooldownUntil = 0
+    this.lastGroundedPos.set(p.id, { ...spawn })
+  }
+
+  private leastCrowdedSpawn(team: Team): Vec3 {
+    const spawns = this.map.spawns[team]
+    const alive = [...this.players.values()].filter((p) => p.alive)
+    let best = spawns[0]
+    let bestCount = Infinity
+    for (const spawn of spawns) {
+      let count = 0
+      for (const p of alive) {
+        if (distSq(p.pos, spawn) < SPAWN_CROWD_RADIUS * SPAWN_CROWD_RADIUS) count++
+      }
+      if (count < bestCount) {
+        bestCount = count
+        best = spawn
+      }
+    }
+    return { ...best }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module-private helpers (not exported).
+// ---------------------------------------------------------------------------
+
+function projectileKindForWeapon(id: WeaponId): Projectile['kind'] | null {
+  switch (id) {
+    case 'boomtube':
+      return 'boomtube'
+    case 'swarm_pod':
+      return 'swarm_dart'
+    case 'ion_charger':
+      return 'ion_charge'
+    default:
+      return null
+  }
+}
+
+function weaponIdForProjectileKind(kind: Projectile['kind']): string {
+  switch (kind) {
+    case 'boomtube':
+      return 'boomtube'
+    case 'swarm_dart':
+      return 'swarm_pod'
+    case 'ion_charge':
+      return 'ion_charger'
+    case 'frag':
+      return 'frag'
+    case 'mag':
+      return 'mag'
+  }
+}
+
+function doMeleeAttack(
+  sim: MatchSim,
+  attacker: PlayerState,
+  range: number,
+  damage: number,
+  weapon: string,
+  now: number,
+  events: SimEvent[]
+): void {
+  const forward = viewDir(attacker.yaw, 0)
+  const cosHalfCone = Math.cos(MELEE_VIEW_CONE / 2)
+  let best: PlayerState | null = null
+  let bestDist = Infinity
+
+  for (const target of sim.players.values()) {
+    if (target.id === attacker.id || !target.alive) continue
+    const toTarget = sub(target.pos, attacker.pos)
+    const dist = length(toTarget)
+    if (dist > range || dist < 1e-6) continue
+    const cosAngle = dot(forward, normalize(toTarget))
+    if (cosAngle < cosHalfCone) continue
+    if (dist < bestDist) {
+      bestDist = dist
+      best = target
+    }
+  }
+
+  if (!best) return
+  const wasAlive = best.alive
+  applyDamage(best, damage, now)
+  if (wasAlive && !best.alive) {
+    sim.killPlayer(best, now, attacker.id, weapon, { ...best.pos }, events)
+  }
+}
+
+/** Fire handling: rate-limited by cooldownUntil. Melee/power-melee resolve
+ * in a view cone; hitscan/burst raycast immediately; projectile/charge
+ * weapons spawn a Projectile stepped in phase 3. */
+function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number, events: SimEvent[]): void {
+  if (now < p.cooldownUntil) return
+
+  if (input.melee) {
+    doMeleeAttack(sim, p, MELEE_RANGE, MELEE_DAMAGE, 'melee', now, events)
+    p.cooldownUntil = now + MELEE_COOLDOWN
+    return
+  }
+
+  if (!input.fire) return
+
+  const weaponId = p.weapons[p.activeWeapon]
+  const weapon = WEAPONS[weaponId]
+
+  if (weapon.kind === 'power_melee') {
+    doMeleeAttack(sim, p, weapon.lungeRange ?? MELEE_RANGE, weapon.damage, weaponId, now, events)
+    p.cooldownUntil = now + 1 / weapon.rof
+    return
+  }
+
+  if (p.ammo[p.activeWeapon] <= 0) p.ammo[p.activeWeapon] = weapon.magSize
+  p.ammo[p.activeWeapon] -= 1
+  p.cooldownUntil = now + 1 / weapon.rof
+  events.push({ type: 'shot', playerId: p.id, weapon: weaponId })
+
+  const eye = eyePos(p)
+  const dir = viewDir(p.yaw, p.pitch)
+
+  if (weapon.kind === 'hitscan' || weapon.kind === 'burst') {
+    const hit = raycast(eye, dir, 1000, sim.map.boxes, [...sim.players.values()], p.id)
+    if (hit.kind === 'player' && hit.playerId) {
+      const target = sim.players.get(hit.playerId)
+      if (target && target.alive) {
+        const mult = hit.head ? weapon.headshotMult : 1
+        const dmg = weapon.damage * weapon.pellets * mult
+        const wasAlive = target.alive
+        applyDamage(target, dmg, now)
+        if (wasAlive && !target.alive) {
+          sim.killPlayer(target, now, p.id, weaponId, { ...target.pos }, events)
+        }
+      }
+    }
+    return
+  }
+
+  const kind = projectileKindForWeapon(weaponId)
+  if (kind) {
+    sim.projectiles.push({
+      id: sim.nextId(),
+      kind,
+      pos: eye,
+      vel: scale(dir, weapon.projectileSpeed ?? 20),
+      ownerId: p.id,
+      team: p.team,
+      fuseAt: now + 10,
+    })
+  }
+}
+
+function stepGrenade(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number): void {
+  if (!input.grenade) return
+  let kind: 'frag' | 'mag' | null = null
+  if (p.grenades.frag > 0) kind = 'frag'
+  else if (p.grenades.mag > 0) kind = 'mag'
+  if (!kind) return
+
+  p.grenades[kind] -= 1
+  const eye = eyePos(p)
+  const dir = viewDir(p.yaw, p.pitch)
+  sim.projectiles.push({
+    id: sim.nextId(),
+    kind,
+    pos: eye,
+    vel: scale(dir, GRENADE_THROW_SPEED),
+    ownerId: p.id,
+    team: p.team,
+    fuseAt: now + (kind === 'frag' ? FRAG_FUSE : MAG_FUSE),
+  })
+}
+
+function stepEquipment(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number): void {
+  if (!input.equipment || !p.equipment) return
+  if (now < p.equipmentCooldownUntil) return
+
+  if (p.equipment === 'camo') {
+    p.camoUntil = now + CAMO_DURATION
+    p.equipmentCooldownUntil = now + CAMO_DURATION
+    return
+  }
+
+  if (p.equipmentCharges <= 0) return
+
+  if (p.equipment === 'grapple') {
+    const eye = eyePos(p)
+    const dir = viewDir(p.yaw, p.pitch)
+    const hit = raycast(eye, dir, GRAPPLE_RANGE, sim.map.boxes, [...sim.players.values()], p.id)
+    if (hit.kind === 'none') return
+    const impulseSpeed = Math.min(hit.dist / TICK_DT, GRAPPLE_MAX_SPEED)
+    p.vel = scale(dir, impulseSpeed)
+    p.equipmentCharges -= 1
+    p.equipmentCooldownUntil = now + GRAPPLE_COOLDOWN
+    return
+  }
+
+  if (p.equipment === 'repulsor') {
+    for (const target of sim.players.values()) {
+      if (target.id === p.id || !target.alive) continue
+      const toTarget = sub(target.pos, p.pos)
+      const dist = length(toTarget)
+      if (dist >= REPULSOR_RADIUS || dist < 1e-6) continue
+      const falloff = 1 - dist / REPULSOR_RADIUS
+      target.vel = add(target.vel, scale(normalize(toTarget), REPULSOR_IMPULSE * falloff))
+    }
+    for (const pr of sim.projectiles) {
+      const toPr = sub(pr.pos, p.pos)
+      const dist = length(toPr)
+      if (dist >= REPULSOR_RADIUS || dist < 1e-6) continue
+      const falloff = 1 - dist / REPULSOR_RADIUS
+      pr.vel = add(pr.vel, scale(normalize(toPr), REPULSOR_IMPULSE * falloff))
+    }
+    p.equipmentCharges -= 1
+    p.equipmentCooldownUntil = now + REPULSOR_COOLDOWN
+  }
+}
+
+function explodeProjectile(
+  sim: MatchSim,
+  pr: Projectile,
+  hitPlayerId: string | undefined,
+  now: number,
+  events: SimEvent[]
+): void {
+  events.push({ type: 'explosion', pos: { ...pr.pos } })
+  const playersArr = [...sim.players.values()]
+  const aliveBefore = new Map(playersArr.map((p) => [p.id, p.alive]))
+
+  switch (pr.kind) {
+    case 'swarm_dart': {
+      if (hitPlayerId) {
+        const target = sim.players.get(hitPlayerId)
+        if (target && target.alive) {
+          applyDamage(target, WEAPONS.swarm_pod.damage, now)
+          if (checkSwarmPop(target, now)) applyDamage(target, SWARM_POP_DAMAGE, now)
+        }
+      }
+      break
+    }
+    case 'ion_charge': {
+      if (hitPlayerId) {
+        const target = sim.players.get(hitPlayerId)
+        if (target && target.alive) applyDamage(target, WEAPONS.ion_charger.damage, now)
+      }
+      break
+    }
+    case 'boomtube':
+      explode(pr.pos, WEAPONS.boomtube.damage, WEAPONS.boomtube.splashRadius ?? 0, playersArr, now)
+      break
+    case 'frag':
+      explode(pr.pos, FRAG_DAMAGE, FRAG_RADIUS, playersArr, now)
+      break
+    case 'mag':
+      explode(pr.pos, MAG_DAMAGE, MAG_RADIUS, playersArr, now)
+      break
+  }
+
+  for (const p of playersArr) {
+    if (aliveBefore.get(p.id) && !p.alive) {
+      sim.killPlayer(p, now, pr.ownerId, weaponIdForProjectileKind(pr.kind), { ...p.pos }, events)
+    }
+  }
+}
+
+function returnFlagHome(sim: MatchSim, flagTeam: Team, now: number, events: SimEvent[], playerId?: string): void {
+  const flag = sim.flags[flagTeam]
+  flag.state = 'stand'
+  flag.pos = { ...sim.map.flagStands[flagTeam] }
+  flag.carrierId = undefined
+  flag.droppedAt = undefined
+  events.push({ type: 'flag_returned', team: flagTeam, playerId })
+}
+
+/** Flag rules: pickup on 1.5m touch by an enemy (from stand or ground),
+ * instant return on touch by the flag's own team while dropped, timed
+ * auto-return, capture when the carrier is within 2m of their own stand. */
+function stepFlags(sim: MatchSim, now: number, events: SimEvent[]): void {
+  const playersArr = [...sim.players.values()]
+
+  for (const flagTeam of [0, 1] as const) {
+    const flag = sim.flags[flagTeam]
+    const homePos = sim.map.flagStands[flagTeam]
+
+    if (flag.state === 'carried' && flag.carrierId) {
+      const carrier = sim.players.get(flag.carrierId)
+      if (!carrier) continue
+      flag.pos = { ...carrier.pos }
+      if (length(sub(carrier.pos, sim.map.flagStands[carrier.team])) <= CAPTURE_RADIUS) {
+        sim.scores[carrier.team] += 1
+        carrier.captures += 1
+        carrier.carryingFlag = null
+        flag.state = 'stand'
+        flag.pos = { ...homePos }
+        flag.carrierId = undefined
+        events.push({ type: 'capture', playerId: carrier.id, team: carrier.team })
+      }
+      continue
+    }
+
+    let pickedUp = false
+    for (const p of playersArr) {
+      if (!p.alive || p.team === flagTeam) continue
+      if (length(sub(p.pos, flag.pos)) <= FLAG_PICKUP_RADIUS) {
+        flag.state = 'carried'
+        flag.carrierId = p.id
+        flag.pos = { ...p.pos }
+        flag.droppedAt = undefined
+        p.carryingFlag = flagTeam
+        events.push({ type: 'flag_taken', team: flagTeam, playerId: p.id })
+        pickedUp = true
+        break
+      }
+    }
+    if (pickedUp) continue
+
+    if (flag.state === 'dropped') {
+      let returned = false
+      for (const p of playersArr) {
+        if (!p.alive || p.team !== flagTeam) continue
+        if (length(sub(p.pos, flag.pos)) <= FLAG_PICKUP_RADIUS) {
+          returnFlagHome(sim, flagTeam, now, events, p.id)
+          returned = true
+          break
+        }
+      }
+      if (!returned && flag.droppedAt !== undefined && now - flag.droppedAt >= FLAG_RETURN_TIME) {
+        returnFlagHome(sim, flagTeam, now, events)
+      }
+    }
+  }
+}
