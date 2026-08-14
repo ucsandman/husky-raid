@@ -30,12 +30,24 @@ const SNAPSHOT_INTERVAL = 1 / SNAPSHOT_RATE
  * stop() is called automatically, e.g. to leave room for a rematch vote. */
 const MATCH_END_LINGER_MS = 20_000
 
+/** Max catch-up ticks run in one timer fire when the wall clock has run
+ * ahead (Windows timer coalescing fires the ~33ms timer late under load).
+ * Bounds the burst of sim work a single late fire can trigger. */
+const MAX_CATCHUP_TICKS = 5
+
+/** Tick debt beyond which the scheduler forgives the backlog instead of
+ * catching up (~1s: process suspend, debugger pause). Sim time simply
+ * resumes from the current wall clock. */
+const MAX_TICK_DEBT_TICKS = TICK_RATE
+
 /**
  * HostedMatch: wraps a MatchSim as the authoritative server-side host of one
- * match. Owns the wall-clock -> sim-clock mapping (a 30Hz setInterval drives
- * ticks; each tick advances the sim clock by exactly TICK_DT, per MatchSim's
- * fixed-timestep contract, regardless of real setInterval jitter) and the
- * 20Hz snapshot cadence via a drift-free accumulator of elapsed sim time.
+ * match. Owns the wall-clock -> sim-clock mapping: a self-correcting
+ * setTimeout chain targets 30Hz and, when a fire lands late (Windows timer
+ * coalescing), runs bounded catch-up ticks so sim time tracks the wall
+ * clock; each tick advances the sim clock by exactly TICK_DT, per MatchSim's
+ * fixed-timestep contract. Snapshots go out at 20Hz via a drift-free
+ * accumulator of elapsed sim time.
  */
 export class HostedMatch {
   readonly sim: MatchSim
@@ -57,8 +69,13 @@ export class HostedMatch {
   private pendingEvents: SimEvent[] = []
   private ended = false
 
-  private interval: ReturnType<typeof setInterval> | null = null
+  private running = false
+  private tickTimer: ReturnType<typeof setTimeout> | null = null
   private endTimeout: ReturnType<typeof setTimeout> | null = null
+  /** Wall-clock time (nowFn seconds) the tick loop started at. */
+  private loopStartWall = 0
+  /** Ticks run since start(); ticksRun * TICK_DT should track the wall. */
+  private ticksRun = 0
 
   constructor(
     mapName: string,
@@ -161,24 +178,55 @@ export class HostedMatch {
   }
 
   start(): void {
-    if (this.interval) return
+    if (this.running) return
+    this.running = true
     this.simNow = this.nowFn()
     this.tickCount = 0
     this.timeSinceSnapshot = 0
     this.pendingEvents = []
     this.ended = false
-    this.interval = setInterval(() => this.tickOnce(), 1000 / TICK_RATE)
+    this.loopStartWall = this.nowFn()
+    this.ticksRun = 0
+    this.scheduleNextTick()
   }
 
   stop(): void {
-    if (this.interval) {
-      clearInterval(this.interval)
-      this.interval = null
+    this.running = false
+    if (this.tickTimer) {
+      clearTimeout(this.tickTimer)
+      this.tickTimer = null
     }
     if (this.endTimeout) {
       clearTimeout(this.endTimeout)
       this.endTimeout = null
     }
+  }
+
+  private scheduleNextTick(): void {
+    const nextDueWall = this.loopStartWall + (this.ticksRun + 1) * TICK_DT
+    // Clamp to [0, TICK_DT]: never sleep past one tick period, and fire
+    // immediately when already overdue.
+    const delaySec = Math.min(Math.max(nextDueWall - this.nowFn(), 0), TICK_DT)
+    this.tickTimer = setTimeout(() => this.runDueTicks(), delaySec * 1000)
+  }
+
+  /** One timer fire: run the tick(s) the wall clock says are due. A timer
+   * that fired late (coalesced) owes more than one tick; run up to
+   * MAX_CATCHUP_TICKS of them now so sim time tracks the wall clock. */
+  private runDueTicks(): void {
+    if (!this.running) return
+    const owedTotal = Math.floor((this.nowFn() - this.loopStartWall) / TICK_DT)
+    let owed = owedTotal - this.ticksRun
+    if (owed > MAX_TICK_DEBT_TICKS) {
+      // Long stall (suspend, debugger): forgive the backlog instead of
+      // bursting a huge catch-up; sim time resumes from the wall clock.
+      this.ticksRun = owedTotal
+      owed = 0
+    }
+    const ticks = Math.max(1, Math.min(owed, MAX_CATCHUP_TICKS))
+    for (let i = 0; i < ticks; i++) this.tickOnce()
+    this.ticksRun += ticks
+    if (this.running) this.scheduleNextTick()
   }
 
   private tickOnce(): void {

@@ -163,17 +163,15 @@ describe('integration: full match lifecycle over real websockets', () => {
       expect(aSnaps.length).toBeGreaterThan(0)
 
       // Cadence: server broadcasts at 20Hz nominal (30Hz tick loop, snapshot
-      // every ~1.5 ticks). The plan's original bar was >=15/s, but on this
-      // dev box a bare setInterval(33ms) already only sustains ~22-28/s
-      // (Windows timer-coalescing under Node, confirmed by direct
-      // measurement), and the real match tick (bot AI + physics + JSON
-      // encode for 8 players) pushes measured wall-clock snapshot rates as
-      // low as ~14/s across repeated runs -- not a fluke, a real property of
-      // this machine's scheduler. >=10/s still proves the pipeline is
-      // continuously streaming (a stalled/broken pipeline would be ~0) while
-      // not flaking on real-time jitter this test can't control.
+      // every ~1.5 ticks). Windows timer coalescing fires Node timers late
+      // under load; the self-correcting scheduler in HostedMatch runs
+      // catch-up ticks per fire so sim time (and thus snapshot count) tracks
+      // the wall clock even when fires land late. A bare setInterval on this
+      // dev box measured as low as ~14/s; with catch-up the bar is the
+      // plan's original >=15/s, with headroom below the 20/s nominal for
+      // real-time jitter this test can't control.
       const snapshotRate = aSnaps.length / scriptElapsedSec
-      expect(snapshotRate).toBeGreaterThanOrEqual(10)
+      expect(snapshotRate).toBeGreaterThanOrEqual(15)
 
       // A's position changed under sustained forward input.
       const firstA = aSnaps[0].players.find((p) => p.id === aWelcome.playerId)

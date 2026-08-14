@@ -24,6 +24,8 @@ The sim ticks at a fixed 30Hz (`TICK_RATE`/`TICK_DT` in `shared/src/constants.ts
 
 **Known limitation / follow-up (2026-08-14):** on Windows under load, Node's plain `setInterval` for the tick loop suffers timer coalescing, yielding an effective wall-clock snapshot cadence of ~14/s instead of the nominal 20/s (measured 3x independently, reproduced by a second reviewer). Sim correctness is unaffected (fixed-timestep sim time is still exact), but real-time pacing suffers. Follow-up: replace the tick loop with a self-correcting scheduler in `HostedMatch` (`setTimeout`-based drift compensation instead of bare `setInterval`).
 
+**Resolved (2026-08-14, same day):** `HostedMatch` now drives ticks with a self-correcting `setTimeout` chain: each fire runs the ticks the wall clock says are owed (up to `MAX_CATCHUP_TICKS` = 5 per fire) and the next delay is computed against the loop's start time, so late fires are compensated instead of dropped. Debt beyond `MAX_TICK_DEBT_TICKS` (~1s, e.g. process suspend) is forgiven rather than burst-replayed. Verified by a fake-clock coalescing test (`server/test/match.test.ts`) and by restoring the integration cadence bar to the plan's original >=15/s (was lowered to >=10/s under the bug; passes 3/3 runs at >=15/s post-fix).
+
 ## 2026-08-14: Dijkstra over A* for bot navigation
 
 Bot pathfinding (`server/src/bots/`) uses Dijkstra rather than A*. The map graph includes teleporters, whose traversal cost isn't a consistent distance metric an A* heuristic could stay admissible against, so a heuristic-free shortest-path search was the safer choice at this map size.

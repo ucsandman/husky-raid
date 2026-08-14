@@ -101,6 +101,32 @@ describe('HostedMatch: match end', () => {
   })
 })
 
+describe('HostedMatch: self-correcting tick scheduler', () => {
+  it('catches sim time up to the wall clock when timers fire late (coalescing)', () => {
+    vi.useFakeTimers()
+    const received: ServerMsg[] = []
+    let wall = 5000
+    const match = new HostedMatch('gutter', 6, (_id, msg) => received.push(msg), () => wall)
+    match.addHuman('h1', 'Human1')
+    match.start()
+
+    // Simulate Windows timer coalescing: the ~33ms tick timer actually fires
+    // only once per 100ms of wall time. A bare setInterval runs one tick per
+    // fire and silently drops the rest; a self-correcting scheduler must run
+    // catch-up ticks so sim time tracks the wall clock.
+    for (let i = 0; i < 30; i++) {
+      wall += 0.1
+      vi.advanceTimersToNextTimer()
+    }
+    match.stop()
+
+    // 3s of wall time at 20Hz nominal => ~60 snapshots. A non-correcting
+    // loop only manages ~20 (30 fires -> 1s of sim time).
+    const snaps = received.filter(isSnapshot)
+    expect(snaps.length).toBeGreaterThanOrEqual(54)
+  })
+})
+
 describe('HostedMatch: input sanitization at the trust boundary (fix 3)', () => {
   it('coerces malformed input fields so the sim never goes non-finite', () => {
     const match = new HostedMatch('gutter', 5, () => {})
