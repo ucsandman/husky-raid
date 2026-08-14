@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { connect, type NetStatus } from '../src/net'
+import { connect, serverUrl, type NetStatus } from '../src/net'
 import type { ServerMsg } from '@riftlane/shared'
 
 /**
@@ -76,6 +76,32 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+describe('client net: which server to dial', () => {
+  const loc = (protocol: string, host: string): Pick<Location, 'protocol' | 'hostname' | 'host' | 'port'> => {
+    const [hostname, port = ''] = host.split(':')
+    return { protocol, host, hostname, port }
+  }
+
+  // The regression: an https page has an EMPTY location.port (443 is
+  // implicit), which the old code read as "no port to go on" and answered
+  // with :8080 -- a port no TLS host exposes. It could never connect.
+  it('dials the page origin on a deployed https site', () => {
+    expect(serverUrl(loc('https:', 'riftlane.onrender.com'))).toBe('wss://riftlane.onrender.com')
+  })
+
+  it('dials the page origin on a plain-http host with no explicit port', () => {
+    expect(serverUrl(loc('http:', 'riftlane.example.com'))).toBe('ws://riftlane.example.com')
+  })
+
+  it('keeps a non-default port, so any PORT the server was started with works', () => {
+    expect(serverUrl(loc('http:', 'localhost:8123'))).toBe('ws://localhost:8123')
+  })
+
+  it('crosses from the Vite dev server to the separate game server', () => {
+    expect(serverUrl(loc('http:', 'localhost:5173'))).toBe('ws://localhost:8080')
+  })
 })
 
 describe('client net: reconnect', () => {

@@ -1,5 +1,5 @@
 import type { ClientMsg, ServerMsg } from '@riftlane/shared'
-import { connect } from './net'
+import { connect, serverUrl } from './net'
 import { InputManager } from './input'
 import { Game } from './game'
 import { store, type Phase } from './state'
@@ -7,18 +7,9 @@ import { initMenu } from './ui/menu'
 import { audioEngine, ALL_SOUND_NAMES } from './audio'
 import './ui/style.css'
 
-// Production: the game server serves this client and the WS API on the same
-// origin/port, so connect to whatever host:port the page was loaded from --
-// that way any PORT the server was started with just works. The :8080
-// fallback is only for the Vite dev server case (client on :5173, server on
-// the default :8080) and any other context with no page port to go on.
-// Protocol-aware: wss:// when the page itself was loaded over https:, so a
-// production deploy behind TLS doesn't get mixed-content blocked.
-const WS_PROTOCOL = location.protocol === 'https:' ? 'wss' : 'ws'
-const SERVER_URL =
-  !location.port || location.port === '5173'
-    ? `${WS_PROTOCOL}://${location.hostname}:8080`
-    : `${WS_PROTOCOL}://${location.host}`
+// Derived from the page's own origin (and unit-tested in client/test/net.test.ts,
+// because getting this wrong only shows up on a real deploy).
+const SERVER_URL = serverUrl(location)
 // Dev-only manual audio smoke test for Task 16's browser pass: run
 // window.__riftlaneAudioTest() in the console to hear every synthesized
 // sound once, back to back. Gated out of production builds.

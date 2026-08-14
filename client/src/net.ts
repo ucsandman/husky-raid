@@ -11,6 +11,30 @@ export interface Net {
   close(): void
 }
 
+/** Port the Vite dev server serves the client on, while the game server
+ * listens separately on VITE_DEV_GAME_PORT. */
+const VITE_DEV_PORT = '5173'
+const VITE_DEV_GAME_PORT = '8080'
+
+/** Where to dial, given the page the client was loaded from.
+ *
+ * In every real deployment the game server serves this client AND the
+ * WebSocket API on one origin, so the answer is "the page's own host".
+ * `location.host` is exactly that: it carries the port when there is one
+ * and correctly omits it for the default 80/443.
+ *
+ * The only exception is `npm run dev:client`, where Vite serves the client
+ * on :5173 and the game server is a separate process on :8080.
+ *
+ * Deriving this from "location.port is empty" instead is what broke the
+ * first deploy: on https://<name>.onrender.com the port IS empty, so the
+ * client dialed :8080 -- a port the host does not expose -- and could
+ * never connect from a browser, while the server itself was healthy. */
+export function serverUrl(loc: Pick<Location, 'protocol' | 'hostname' | 'host' | 'port'>): string {
+  const scheme = loc.protocol === 'https:' ? 'wss' : 'ws'
+  return loc.port === VITE_DEV_PORT ? `${scheme}://${loc.hostname}:${VITE_DEV_GAME_PORT}` : `${scheme}://${loc.host}`
+}
+
 const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 10_000
 /** Keepalive period. Under the idle timeout of every proxy in the path, so a
