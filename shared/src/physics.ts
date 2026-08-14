@@ -6,14 +6,42 @@ import {
   ACCEL_GROUND,
   ACCEL_AIR,
   FRICTION_GROUND,
-  GRAVITY,
+  PLAYER_GRAVITY,
   JUMP_SPEED,
   PLAYER_RADIUS,
   PLAYER_HEIGHT,
   FLAG_CARRIER_SPEED_MULT,
   TELEPORT_COOLDOWN,
   TELEPORT_ARRIVAL_OFFSET,
+  COYOTE_TIME,
+  JUMP_BUFFER_TIME,
+  SPRINT_SPEED_MULT,
+  SPRINT_MIN_FORWARD,
+  SLIDE_SPEED_MULT,
+  SLIDE_DURATION,
+  SLIDE_FRICTION,
+  SLIDE_MIN_SPEED,
+  SLIDE_COOLDOWN,
+  CLAMBER_MIN_HEIGHT,
+  CLAMBER_MAX_HEIGHT,
+  CLAMBER_CHECK_DISTANCE,
+  CLAMBER_BOOST_SPEED,
 } from './constants'
+
+/**
+ * Canonical pitched view-direction convention: yaw=0 -> +z (matching
+ * stepMovement's forwardVec below), pitch positive looks up. The single
+ * source of truth for aim/tracer/melee direction math -- see
+ * docs/ERRORS.md's "Three separate sign-convention inversion bugs" entry
+ * for why every call site must use this instead of re-deriving its own trig.
+ */
+export function viewDir(yaw: number, pitch: number): Vec3 {
+  return normalize({
+    x: Math.sin(yaw) * Math.cos(pitch),
+    y: Math.sin(pitch),
+    z: Math.cos(yaw) * Math.cos(pitch),
+  })
+}
 
 function playerAABB(pos: Vec3): AABB {
   return {
@@ -105,6 +133,50 @@ function applyFriction(vel: Vec3, dt: number): Vec3 {
 }
 
 /**
+ * Airborne ledge clamber: probes CLAMBER_CHECK_DISTANCE ahead of `pos`
+ * along `wishDir` for a box whose top sits between CLAMBER_MIN_HEIGHT and
+ * CLAMBER_MAX_HEIGHT above `pos`, and whose x/z footprint (padded by
+ * PLAYER_RADIUS) contains the probe point. Rejects a candidate if any
+ * other box occupies the headroom column [box.max.y, box.max.y +
+ * PLAYER_HEIGHT] at the probe (nothing to stand up into). Returns the
+ * ledge's top y, or null if no box qualifies. Pure -- no mutation.
+ */
+export function tryClamber(pos: Vec3, wishDir: Vec3, boxes: AABB[]): number | null {
+  const probe = add(pos, scale(wishDir, CLAMBER_CHECK_DISTANCE))
+
+  for (const box of boxes) {
+    if (
+      probe.x < box.min.x - PLAYER_RADIUS ||
+      probe.x > box.max.x + PLAYER_RADIUS ||
+      probe.z < box.min.z - PLAYER_RADIUS ||
+      probe.z > box.max.z + PLAYER_RADIUS
+    ) {
+      continue
+    }
+
+    const height = box.max.y - pos.y
+    if (height < CLAMBER_MIN_HEIGHT || height > CLAMBER_MAX_HEIGHT) continue
+
+    let blocked = false
+    for (const other of boxes) {
+      if (other === box) continue
+      if (probe.x < other.min.x || probe.x > other.max.x || probe.z < other.min.z || probe.z > other.max.z) {
+        continue
+      }
+      if (other.min.y < box.max.y + PLAYER_HEIGHT && other.max.y > box.max.y) {
+        blocked = true
+        break
+      }
+    }
+    if (blocked) continue
+
+    return box.max.y
+  }
+
+  return null
+}
+
+/**
  * Steps one player one tick. Deterministic: a pure function of
  * (p, input, map, dt) — no Math.random, no Date.now. Mutates p's
  * pos/vel/grounded/yaw/pitch/teleportCooldownUntil in place.
@@ -135,20 +207,76 @@ export function stepMovement(
   const wish = add(scale(forwardVec, input.forward), scale(rightVec, input.strafe))
   const wishDir = normalize(wish)
   const speedMult = p.carryingFlag !== null ? FLAG_CARRIER_SPEED_MULT : 1
-  const wishSpeed = MOVE_SPEED * speedMult
 
-  if (length(wishDir) > 0) {
+  // Slide: cooldown ticks down every tick; a fresh slide can start once
+  // grounded, not already sliding, off cooldown, and moving fast enough.
+  p.slideCooldownRemaining = Math.max(0, p.slideCooldownRemaining - dt)
+  const hSpeed = Math.hypot(p.vel.x, p.vel.z)
+  if (
+    input.slideRequest === true &&
+    p.grounded &&
+    !p.sliding &&
+    p.slideCooldownRemaining <= 0 &&
+    hSpeed > SLIDE_MIN_SPEED
+  ) {
+    p.sliding = true
+    p.slideTimeRemaining = SLIDE_DURATION
+    p.vel = { x: p.vel.x * SLIDE_SPEED_MULT, y: p.vel.y, z: p.vel.z * SLIDE_SPEED_MULT }
+  }
+
+  p.sprinting =
+    input.sprint === true && p.grounded && !p.sliding && input.forward > SPRINT_MIN_FORWARD && !input.fire
+  const wishSpeed = MOVE_SPEED * speedMult * (p.sprinting ? SPRINT_SPEED_MULT : 1)
+
+  if (p.sliding) {
+    // Skip accelerate()/applyFriction() while sliding -- decay horizontal
+    // speed with the same drop formula as applyFriction, but SLIDE_FRICTION.
+    const speed = Math.sqrt(p.vel.x * p.vel.x + p.vel.z * p.vel.z)
+    if (speed < 1e-6) {
+      p.vel = { x: 0, y: p.vel.y, z: 0 }
+    } else {
+      const drop = speed * SLIDE_FRICTION * dt
+      const newSpeed = Math.max(speed - drop, 0)
+      const f = newSpeed / speed
+      p.vel = { x: p.vel.x * f, y: p.vel.y, z: p.vel.z * f }
+    }
+    p.slideTimeRemaining -= dt
+    if (p.slideTimeRemaining <= 0 || !p.grounded || input.jump) {
+      p.sliding = false
+      p.slideCooldownRemaining = SLIDE_COOLDOWN
+      // Ending via jump must NOT zero vel.x/z here -- a free slide-cancel jump.
+    }
+  } else if (length(wishDir) > 0) {
     const accel = p.grounded ? ACCEL_GROUND : ACCEL_AIR
     p.vel = accelerate(p.vel, wishDir, wishSpeed, accel, dt)
   } else if (p.grounded) {
     p.vel = applyFriction(p.vel, dt)
   }
 
-  if (input.jump && p.grounded) {
+  // Coyote time: grounded refreshes the window; airborne counts it down.
+  // Reads p.grounded as set by last tick's collideCapsule -- no reordering.
+  if (p.grounded) {
+    p.coyoteTimeRemaining = COYOTE_TIME
+  } else {
+    p.coyoteTimeRemaining = Math.max(0, p.coyoteTimeRemaining - dt)
+  }
+  const canJump = p.grounded || p.coyoteTimeRemaining > 0
+  if (input.jump && canJump) {
     p.vel = { ...p.vel, y: JUMP_SPEED }
+    p.coyoteTimeRemaining = 0
+    p.jumpBufferRemaining = 0
+  } else if (input.jump && !canJump) {
+    // Too late for coyote time -- buffer the press so it fires the moment
+    // this player lands.
+    p.jumpBufferRemaining = JUMP_BUFFER_TIME
+  } else if (p.grounded && p.jumpBufferRemaining > 0) {
+    p.vel = { ...p.vel, y: JUMP_SPEED }
+    p.jumpBufferRemaining = 0
+  } else {
+    p.jumpBufferRemaining = Math.max(0, p.jumpBufferRemaining - dt)
   }
 
-  p.vel = { ...p.vel, y: p.vel.y - GRAVITY * dt }
+  p.vel = { ...p.vel, y: p.vel.y - PLAYER_GRAVITY * dt }
 
   let forcedAirborne = false
   for (const pad of map.launchPads) {
@@ -178,6 +306,15 @@ export function stepMovement(
         p.teleportCooldownUntil = TELEPORT_COOLDOWN
         break
       }
+    }
+  }
+
+  if (!p.grounded && !p.sliding && !forcedAirborne && length(wishDir) > 0) {
+    const ledgeY = tryClamber(p.pos, wishDir, map.boxes)
+    if (ledgeY !== null) {
+      p.pos = { ...p.pos, y: ledgeY }
+      p.vel = { ...p.vel, y: CLAMBER_BOOST_SPEED }
+      p.grounded = false
     }
   }
 

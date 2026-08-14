@@ -347,6 +347,35 @@ body {
   }
 }
 
+.controls-panel {
+  margin-top: 1.5rem;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.control-key {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  white-space: nowrap;
+  justify-self: start;
+}
+
+.control-action {
+  color: var(--text-dim);
+  align-self: center;
+}
+
 .room-code-row {
   display: flex;
   align-items: center;

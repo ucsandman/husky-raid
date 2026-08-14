@@ -22,6 +22,8 @@ export interface PlayerInput {
   grenade: boolean
   equipment: boolean
   swap: boolean
+  sprint?: boolean
+  slideRequest?: boolean
 }
 
 export type Team = 0 | 1
@@ -84,4 +86,22 @@ export interface PlayerState {
    * teleport. Compare with `<= 0`, not against a "now".
    */
   teleportCooldownUntil: number
+  /** True while the player is currently sprinting (recomputed every tick
+   * from input + grounded/sliding/fire state, not a countdown). */
+  sprinting: boolean
+  /** True while the player is currently sliding. */
+  sliding: boolean
+  /**
+   * NOT an absolute timestamp -- same countdown convention as
+   * teleportCooldownUntil above: seconds remaining, decremented by dt every
+   * tick, floors at 0. Slide ends when this reaches 0 (or on an early-exit
+   * condition -- see stepMovement).
+   */
+  slideTimeRemaining: number
+  /** Countdown (seconds remaining), same convention as teleportCooldownUntil. */
+  slideCooldownRemaining: number
+  /** Countdown (seconds remaining), same convention as teleportCooldownUntil. */
+  coyoteTimeRemaining: number
+  /** Countdown (seconds remaining), same convention as teleportCooldownUntil. */
+  jumpBufferRemaining: number
 }

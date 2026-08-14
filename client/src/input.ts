@@ -11,6 +11,8 @@ const KEY_EQUIPMENT = 'KeyE'
 const KEY_SWAP_A = 'Digit1'
 const KEY_SWAP_B = 'Digit2'
 const KEY_SCOREBOARD = 'Tab'
+const KEY_SPRINT = 'ShiftLeft'
+const KEY_SLIDE = 'ControlLeft'
 
 const PITCH_LIMIT = Math.PI / 2 - 0.01
 
@@ -27,6 +29,7 @@ export class InputManager {
   private yaw = 0
   private pitch = 0
   private swapPending = false
+  private slidePending = false
 
   constructor(
     private readonly canvas: HTMLElement,
@@ -81,6 +84,10 @@ export class InputManager {
     if (!this.locked) return
     this.keys.add(e.code)
     if (e.code === KEY_SWAP_A || e.code === KEY_SWAP_B) this.swapPending = true
+    if (e.code === KEY_SLIDE) {
+      this.slidePending = true
+      e.preventDefault() // ControlLeft combos can trigger browser shortcuts
+    }
     if (e.code === KEY_SCOREBOARD) e.preventDefault() // don't let Tab move browser focus
   }
 
@@ -114,6 +121,8 @@ export class InputManager {
     const strafe = (this.keys.has(KEY_RIGHT) ? 1 : 0) - (this.keys.has(KEY_LEFT) ? 1 : 0)
     const swap = this.swapPending
     this.swapPending = false
+    const slideRequest = this.slidePending
+    this.slidePending = false
     return {
       seq,
       dt,
@@ -127,6 +136,8 @@ export class InputManager {
       grenade: this.keys.has(KEY_GRENADE),
       equipment: this.keys.has(KEY_EQUIPMENT),
       swap,
+      sprint: this.keys.has(KEY_SPRINT),
+      slideRequest,
     }
   }
 

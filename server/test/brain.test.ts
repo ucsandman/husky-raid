@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { BotBrain, DEFAULT_DIFFICULTY } from '../src/bots/brain'
 import { assignRoles, type Role } from '../src/bots/roles'
-import { MatchSim, TICK_DT, MATCH_TIME } from '@riftlane/shared'
+import { MatchSim, TICK_DT, MATCH_TIME, stepMovement } from '@riftlane/shared'
 import type { PlayerState } from '@riftlane/shared'
 
 describe('assignRoles: idle team', () => {
@@ -171,6 +171,38 @@ describe('BotBrain: weapon choice', () => {
     const brain = new BotBrain('bot-1', DEFAULT_DIFFICULTY, 333)
     const input = brain.think(sim, sim.map, 'hunter', 0)
     expect(input.swap).toBe(true)
+  })
+})
+
+describe('BotBrain: neutral input omits sprint/slideRequest (pins bot pacing)', () => {
+  it('a bot-generated input with no sprint/slideRequest fields steps movement identically to the same input with them explicitly false', () => {
+    const sim = new MatchSim('gutter', 50)
+    const bot = sim.addPlayer('bot-1', 'Bot', 0, true)
+    const brain = new BotBrain('bot-1', DEFAULT_DIFFICULTY, 500)
+
+    // BotBrain.think() never sets sprint/slideRequest -- its return object
+    // (brain.ts) only populates the pre-sprint-era PlayerInput fields.
+    // These are optional (types.ts), so an absent field and an explicit
+    // `false` must produce identical stepMovement results -- otherwise a
+    // later pass that starts defaulting them to something other than
+    // `=== true` would silently change bot pacing.
+    const botInput = brain.think(sim, sim.map, 'defender', 0)
+    expect(botInput).not.toHaveProperty('sprint')
+    expect(botInput).not.toHaveProperty('slideRequest')
+
+    const preSprintEraInput = { ...botInput, sprint: false, slideRequest: false }
+
+    const stateA: PlayerState = { ...bot, pos: { ...bot.pos }, vel: { ...bot.vel } }
+    const stateB: PlayerState = { ...bot, pos: { ...bot.pos }, vel: { ...bot.vel } }
+
+    stepMovement(stateA, botInput, sim.map, TICK_DT)
+    stepMovement(stateB, preSprintEraInput, sim.map, TICK_DT)
+
+    expect(stateA.pos).toEqual(stateB.pos)
+    expect(stateA.vel).toEqual(stateB.vel)
+    expect(stateA.grounded).toEqual(stateB.grounded)
+    expect(stateA.sprinting).toEqual(stateB.sprinting)
+    expect(stateA.sliding).toEqual(stateB.sliding)
   })
 })
 

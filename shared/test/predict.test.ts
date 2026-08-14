@@ -42,6 +42,31 @@ describe('Predictor', () => {
     expect(predicted.grounded).toEqual(raw.grounded)
   })
 
+  it('prediction matches server exactly with sprint/slide inputs', () => {
+    const predicted = makeTestPlayer()
+    const raw = makeTestPlayer()
+    const predictor = new Predictor(MAPS.gutter)
+
+    for (let i = 0; i < 60; i++) {
+      const input = makeInput({
+        seq: i,
+        yaw: 0,
+        forward: 1,
+        sprint: i % 2 === 0,
+        slideRequest: i % 11 === 0,
+        jump: i % 17 === 0,
+      })
+      predictor.applyInput(predicted, input)
+      stepMovement(raw, input, MAPS.gutter, input.dt)
+    }
+
+    expect(predicted.pos).toEqual(raw.pos)
+    expect(predicted.vel).toEqual(raw.vel)
+    expect(predicted.grounded).toEqual(raw.grounded)
+    expect(predicted.sprinting).toEqual(raw.sprinting)
+    expect(predicted.sliding).toEqual(raw.sliding)
+  })
+
   it('reconcile replays unacked inputs', () => {
     const predicted = makeTestPlayer()
     const predictor = new Predictor(MAPS.gutter)
@@ -69,6 +94,46 @@ describe('Predictor', () => {
     expect(predicted.pos.y).toBeCloseTo(reference.pos.y, 6)
     expect(predicted.pos.z).toBeCloseTo(reference.pos.z, 6)
     expect(Math.hypot(delta.x, delta.y, delta.z)).toBeLessThan(1e-6)
+  })
+
+  it('reconcile arrives while predicted is mid-slide and the replay matches a fresh server replay bit-identically', () => {
+    const predicted = makeTestPlayer()
+    const predictor = new Predictor(MAPS.gutter)
+    const inputs: PlayerInput[] = []
+
+    // Sprint to build speed, then trigger one slide partway through. The
+    // server has only ever seen inputs up to ACK_SEQ (well before the slide
+    // even starts) -- by the time its ack arrives, the client has already
+    // run ahead into an active slide (predicted.sliding is still true right
+    // up to the reconcile call below). reconcile() unconditionally resets
+    // sliding/slideTimeRemaining/slideCooldownRemaining (see predict.ts),
+    // which is correct here since the server's own state at ACK_SEQ was
+    // never sliding either -- so the full replay from that reset state
+    // re-derives the slide from scratch and should land bit-identically on
+    // whatever a fresh, uninterrupted server replay of all inputs produces.
+    const SLIDE_AT = 15
+    const ACK_SEQ = 5
+    const TOTAL = 30
+
+    for (let i = 0; i < TOTAL; i++) {
+      const input = makeInput({ seq: i, yaw: 0, forward: 1, sprint: i < SLIDE_AT, slideRequest: i === SLIDE_AT })
+      inputs.push(input)
+      predictor.applyInput(predicted, input)
+    }
+    expect(predicted.sliding).toBe(true) // confirms the reconcile below really does arrive mid-slide
+
+    const server = makeTestPlayer()
+    for (let i = 0; i <= ACK_SEQ; i++) stepMovement(server, inputs[i], MAPS.gutter, inputs[i].dt)
+    const serverSnap = toSnapPlayer(server, 0)
+
+    predictor.reconcile(predicted, serverSnap, ACK_SEQ)
+
+    const reference = makeTestPlayer()
+    for (const input of inputs) stepMovement(reference, input, MAPS.gutter, input.dt)
+
+    expect(predicted.pos).toEqual(reference.pos)
+    expect(predicted.vel).toEqual(reference.vel)
+    expect(predicted.sliding).toEqual(reference.sliding)
   })
 
   it('reconcile corrects divergence', () => {

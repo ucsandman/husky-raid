@@ -6,6 +6,9 @@ export const TEAM_GLOW: Record<Team, number> = { 0: 0x5b9dff, 1: 0xff9a48 }
 export const TELEPORT_A_COLOR = 0x49b6ff
 export const TELEPORT_B_COLOR = 0xffa54d
 export const LAUNCH_COLOR = 0x5cffd0
+/** Warm amber cap colour for guard-rail curbs -- reads as "hazard", distinct
+ * from the cool lane accent and from both team glows (blue / orange). */
+export const HAZARD_ACCENT = 0xffc400
 export const SKY_ZENITH = 0x070a1c
 export const SKY_HIGH = 0x1b1f4d
 export const SKY_HORIZON = 0x59306b

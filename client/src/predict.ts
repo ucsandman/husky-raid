@@ -80,6 +80,12 @@ function reconstructPlayerState(snap: SnapPlayer): PlayerState {
     captures: 0,
     // Not carried on the wire -- see Predictor.reconcile's comment.
     teleportCooldownUntil: 0,
+    sprinting: false,
+    sliding: false,
+    slideTimeRemaining: 0,
+    slideCooldownRemaining: 0,
+    coyoteTimeRemaining: 0,
+    jumpBufferRemaining: 0,
   }
 }
 

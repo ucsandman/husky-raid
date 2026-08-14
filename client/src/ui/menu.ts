@@ -5,6 +5,21 @@ import { audioEngine } from '../audio'
 const TEAM_COLOR: Record<Team, string> = { 0: 'var(--cobalt)', 1: 'var(--ember)' }
 const TEAM_NAME: Record<Team, string> = { 0: 'Cobalt', 1: 'Ember' }
 
+// Real bindings from input.ts -- sprint/slide listed right after move so
+// they're readable at a glance (undiscoverable otherwise: both are
+// hold-modifier keys with no on-screen prompt in a match).
+const CONTROLS: [string, string][] = [
+  ['WASD', 'Move'],
+  ['Shift', 'Sprint'],
+  ['Ctrl', 'Slide'],
+  ['Space', 'Jump'],
+  ['Mouse', 'Fire'],
+  ['F', 'Melee'],
+  ['G', 'Grenade'],
+  ['E', 'Equipment'],
+  ['1 / 2 / Scroll', 'Swap weapon'],
+]
+
 type Send = (msg: ClientMsg) => void
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -160,10 +175,23 @@ function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
   actions.appendChild(joinRow)
 
   card.appendChild(actions)
+  card.appendChild(renderControlsPanel())
   card.appendChild(renderSettingsPanel(state))
 
   screen.appendChild(card)
   return screen
+}
+
+function renderControlsPanel(): HTMLElement {
+  const panel = el('div', 'controls-panel')
+  panel.appendChild(el('h2', 'panel-heading', 'CONTROLS'))
+  const grid = el('div', 'controls-grid')
+  for (const [key, action] of CONTROLS) {
+    grid.appendChild(el('span', 'control-key', key))
+    grid.appendChild(el('span', 'control-action', action))
+  }
+  panel.appendChild(grid)
+  return panel
 }
 
 function renderSettingsPanel(state: ClientState): HTMLElement {

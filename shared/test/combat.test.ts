@@ -1,8 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import type { AABB } from '../src/types'
 import { normalize } from '../src/math'
-import { TICK_DT, MAX_SHIELD, MAX_HEALTH, FRAG_DAMAGE, FRAG_RADIUS, FRAG_FUSE, MAG_FUSE } from '../src/constants'
-import { WEAPONS, WEAPON_POOL, rollLoadout } from '../src/weapons'
+import {
+  TICK_DT,
+  MAX_SHIELD,
+  MAX_HEALTH,
+  FRAG_DAMAGE,
+  FRAG_RADIUS,
+  FRAG_FUSE,
+  MAG_FUSE,
+  PLAYER_BODY_CENTER_Y,
+  PLAYER_BODY_RADIUS,
+  PLAYER_HEAD_RADIUS,
+} from '../src/constants'
+import { WEAPONS, WEAPON_POOL, STARTER_WEAPON, rollLoadout } from '../src/weapons'
 import {
   applyDamage,
   tickShield,
@@ -69,28 +80,36 @@ describe('tickShield', () => {
 
 describe('rollLoadout', () => {
   it('never duplicates weapons and honors the injected rand sequence', () => {
-    const rand = seqRand([0, 0, 0, 0])
+    // rollLoadout now consumes one rand() call for weapons (not two) --
+    // slot 0 is always STARTER_WEAPON, so only the remaining 3 values in
+    // this sequence (grenades, equipment) matter beyond the first.
+    const rand = seqRand([0, 0, 0])
     const loadout = rollLoadout(rand)
-    expect(loadout.weapons[0]).toBe(WEAPON_POOL[0])
-    expect(loadout.weapons[1]).toBe(WEAPON_POOL[1])
+    expect(loadout.weapons[0]).toBe(STARTER_WEAPON)
+    expect(loadout.weapons[1]).toBe(WEAPON_POOL[0])
     expect(loadout.grenades).toEqual({ frag: 2, mag: 0 })
     expect(loadout.equipment).toBe('grapple')
 
-    const rand2 = seqRand([0.95, 0.5, 0.5, 0.99])
+    const rand2 = seqRand([0.95, 0.5, 0.5])
     const loadout2 = rollLoadout(rand2)
     expect(loadout2.weapons[0]).not.toBe(loadout2.weapons[1])
-    expect(loadout2.equipment).toBe(null)
+    // EQUIPMENT_OPTIONS dropped its trailing null -- sandbox loadouts
+    // always roll a piece of equipment now.
+    expect(loadout2.equipment).not.toBe(null)
+  })
 
-    for (let trial = 0; trial < 50; trial++) {
+  it('200 seeded rolls: guaranteed precision starter, no null equipment, no duplicate weapons', () => {
+    for (let trial = 0; trial < 200; trial++) {
       let seed = trial * 7 + 1
       const prand = (): number => {
         seed = (seed * 1103515245 + 12345) & 0x7fffffff
         return (seed % 10000) / 10000
       }
       const lo = rollLoadout(prand)
+      expect(lo.weapons[0]).toBe(STARTER_WEAPON)
       expect(lo.weapons[0]).not.toBe(lo.weapons[1])
-      expect(WEAPON_POOL).toContain(lo.weapons[0])
       expect(WEAPON_POOL).toContain(lo.weapons[1])
+      expect(lo.equipment).not.toBe(null)
     }
   })
 })
@@ -114,18 +133,60 @@ describe('raycast', () => {
   })
 })
 
+describe('hit-sphere geometry: Halo-feel widening', () => {
+  it('locks in the widened body/head hit-sphere radii (was 0.5/0.25)', () => {
+    expect(PLAYER_BODY_RADIUS).toBe(0.58)
+    expect(PLAYER_HEAD_RADIUS).toBe(0.3)
+  })
+
+  it('a lateral offset the old 0.5 body radius would have missed still hits at 0.58', () => {
+    // Ray travels straight down +z at exactly the body sphere's own height
+    // (PLAYER_BODY_CENTER_Y), offset laterally by 0.55m from the target's
+    // centerline. dir has no x/y component, so the perpendicular distance
+    // from the ray to the body-sphere center is exactly the lateral offset:
+    // 0.55 -- between the pre-widening radius (0.5, would MISS) and the
+    // current one (0.58, HITS). Confirms the widened constant actually
+    // changes a real hit outcome, not just its own value.
+    const LATERAL_OFFSET = 0.55
+    expect(LATERAL_OFFSET).toBeGreaterThan(0.5) // old radius: this shot would have missed
+    expect(LATERAL_OFFSET).toBeLessThan(PLAYER_BODY_RADIUS) // current radius: this shot hits
+
+    const target = makeTestPlayer({ id: 'target', pos: { x: 0, y: 0, z: 10 } })
+    const origin = { x: LATERAL_OFFSET, y: PLAYER_BODY_CENTER_Y, z: 0 }
+    const dir = normalize({ x: 0, y: 0, z: 1 })
+
+    const hit = raycast(origin, dir, 50, [], [target], 'shooter')
+    expect(hit.kind).toBe('player')
+    expect(hit.playerId).toBe('target')
+    expect(hit.head).toBe(false)
+  })
+})
+
 describe('railspike math', () => {
-  it('body hit (100) and head hit (200) both kill a full-shield player exactly', () => {
+  it('deals exactly MAX_SHIELD damage per body hit (the invariant the shield-zero test below depends on)', () => {
+    expect(WEAPONS.railspike.damage).toBe(MAX_SHIELD)
+  })
+
+  it('body hit (70) exactly zeroes shield without touching health; head hit (140) kills a full-shield player outright', () => {
     const bodyTarget = makeTestPlayer()
     const r1 = applyDamage(bodyTarget, WEAPONS.railspike.damage, 0)
-    expect(r1).toBe('killed')
-    expect(bodyTarget.health).toBe(0)
+    expect(r1).toBe('shield_break')
+    expect(bodyTarget.shield).toBe(0)
+    expect(bodyTarget.health).toBe(MAX_HEALTH)
+    expect(bodyTarget.alive).toBe(true)
 
     const headTarget = makeTestPlayer()
     const headDamage = WEAPONS.railspike.damage * WEAPONS.railspike.headshotMult
     const r2 = applyDamage(headTarget, headDamage, 0)
     expect(r2).toBe('killed')
     expect(headTarget.health).toBe(0)
+  })
+
+  it('two body hits kill a full-shield player', () => {
+    const target = makeTestPlayer()
+    applyDamage(target, WEAPONS.railspike.damage, 0)
+    const r2 = applyDamage(target, WEAPONS.railspike.damage, 1)
+    expect(r2).toBe('killed')
   })
 })
 

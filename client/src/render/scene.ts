@@ -4,7 +4,14 @@ import { FOG_COLOR, MaterialLibrary } from './materials'
 import { buildSky } from './sky'
 import { disposeObject3D } from './dispose'
 
-const FOV_DEGREES = 75
+// Halo Infinite ships 100-120; 75 read as a claustrophobic tunnel that made
+// strafing targets hard to track and cut peripheral awareness at close range.
+// THREE.PerspectiveCamera's fov is the VERTICAL field of view, not
+// horizontal -- 90 vertical is ~121 horizontal at a 16:9 aspect (the top of
+// Infinite's 78-120 slider, itself horizontal). Do not "fix" this back up:
+// 105 vertical would be ~133 horizontal, well past Infinite's band, and it
+// shrinks every target on screen.
+const FOV_DEGREES = 90
 const NEAR = 0.05
 const FAR = 500
 const FOG_NEAR = 34

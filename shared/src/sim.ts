@@ -2,7 +2,7 @@ import type { Vec3, PlayerState, PlayerInput, Team, WeaponId, EquipmentId } from
 import type { GameMap } from './map'
 import { MAPS } from './maps'
 import { add, sub, scale, dot, cross, normalize, length, distSq } from './math'
-import { stepMovement } from './physics'
+import { stepMovement, viewDir } from './physics'
 import {
   applyDamage,
   tickShield,
@@ -54,6 +54,7 @@ import {
   SWAP_COOLDOWN,
   RELOAD_TIME,
   HOMING_CONE_ANGLE,
+  MELEE_LUNGE_SPEED,
 } from './constants'
 
 export interface FlagState {
@@ -64,7 +65,7 @@ export interface FlagState {
 }
 
 export type SimEvent =
-  | { type: 'kill'; killerId: string; victimId: string; weapon: string }
+  | { type: 'kill'; killerId: string; victimId: string; weapon: string; head: boolean }
   | { type: 'capture'; playerId: string; team: Team }
   | { type: 'flag_taken' | 'flag_dropped' | 'flag_returned'; team: Team; playerId?: string }
   | { type: 'shot'; playerId: string; weapon: WeaponId }
@@ -86,14 +87,6 @@ function defaultInput(p: PlayerState): PlayerInput {
     equipment: false,
     swap: false,
   }
-}
-
-function viewDir(yaw: number, pitch: number): Vec3 {
-  return normalize({
-    x: Math.sin(yaw) * Math.cos(pitch),
-    y: Math.sin(pitch),
-    z: Math.cos(yaw) * Math.cos(pitch),
-  })
 }
 
 function eyePos(p: PlayerState): Vec3 {
@@ -204,6 +197,12 @@ export class MatchSim {
       deaths: 0,
       captures: 0,
       teleportCooldownUntil: 0,
+      sprinting: false,
+      sliding: false,
+      slideTimeRemaining: 0,
+      slideCooldownRemaining: 0,
+      coyoteTimeRemaining: 0,
+      jumpBufferRemaining: 0,
     }
     this.players.set(id, p)
     this.lastGroundedPos.set(id, { ...spawn })
@@ -359,7 +358,8 @@ export class MatchSim {
     killerId: string | null,
     weapon: string,
     dropPos: Vec3,
-    events: SimEvent[]
+    events: SimEvent[],
+    head = false
   ): void {
     victim.alive = false
     victim.deaths += 1
@@ -369,7 +369,7 @@ export class MatchSim {
       const killer = this.players.get(killerId)
       if (killer) killer.kills += 1
     }
-    events.push({ type: 'kill', killerId: finalKillerId, victimId: victim.id, weapon })
+    events.push({ type: 'kill', killerId: finalKillerId, victimId: victim.id, weapon, head })
     if (victim.carryingFlag !== null) {
       const flagTeam = victim.carryingFlag
       victim.carryingFlag = null
@@ -406,6 +406,12 @@ export class MatchSim {
     p.camoUntil = 0
     p.stuckDarts = 0
     p.teleportCooldownUntil = 0
+    p.sprinting = false
+    p.sliding = false
+    p.slideTimeRemaining = 0
+    p.slideCooldownRemaining = 0
+    p.coyoteTimeRemaining = 0
+    p.jumpBufferRemaining = 0
     this.lastGroundedPos.set(p.id, { ...spawn })
   }
 
@@ -513,6 +519,15 @@ function doMeleeAttack(
   }
 
   if (!best) return
+  // Melee lunge: horizontal-only nudge toward the target, grounded only,
+  // vel.y left untouched (no free height from meleeing an airborne target).
+  if (attacker.grounded) {
+    const d = sub(best.pos, attacker.pos)
+    const h = Math.hypot(d.x, d.z)
+    if (h > 1e-6) {
+      attacker.vel = { x: (d.x / h) * MELEE_LUNGE_SPEED, y: attacker.vel.y, z: (d.z / h) * MELEE_LUNGE_SPEED }
+    }
+  }
   // best was filtered to target.alive above, so applyDamage always starts
   // from a live target -- no need to snapshot "was alive" before checking.
   applyDamage(best, damage, now)
@@ -584,7 +599,7 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
           const mult = hit.head ? weapon.headshotMult : 1
           applyDamage(target, weapon.damage * mult, now)
           if (!target.alive) {
-            sim.killPlayer(target, now, p.id, weaponId, { ...target.pos }, events)
+            sim.killPlayer(target, now, p.id, weaponId, { ...target.pos }, events, !!hit.head)
           }
         }
       }

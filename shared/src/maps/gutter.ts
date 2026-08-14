@@ -3,6 +3,13 @@ import type { GameMap } from '../map'
 // Straight lane along z, ~60 long x 12 wide. Floor is split into a center
 // lane plus two side rails, leaving two gutters (death pits) between them —
 // like a bowling lane. Bases sit on raised platforms at the far ends.
+// The lane's own outer edges (facing each gutter) and the world's outer
+// edges (outside each rail) carry a knee-high guard-rail curb -- see boxes
+// 13-18 below -- so falling off the LANE takes a deliberate jump, not a
+// stray strafe. The rails themselves are no longer curbed on their
+// gutter-facing side (the trench fix, task 8): a rail-side curb fought the
+// gutters' own "falling takes a jump" design from the other direction, so
+// walking off a rail into its gutter is a plain strafe again.
 export const gutter: GameMap = {
   name: 'gutter',
   boxes: [
@@ -35,6 +42,36 @@ export const gutter: GameMap = {
     { min: { x: 1.3, y: 0, z: 5.3 }, max: { x: 2.7, y: 1, z: 6.7 } }, // 10
     { min: { x: -2.7, y: 0, z: 11.3 }, max: { x: -1.3, y: 1, z: 12.7 } }, // 11
     { min: { x: 1.3, y: 0, z: 14.3 }, max: { x: 2.7, y: 1, z: 15.7 } }, // 12
+    // Guard-rail curbs: knee-high (0.5m) solid lips mounted ON the solid
+    // floor right at each edge that faces open air (encroaching ~0.3m into
+    // the walkable surface, not hanging out over the pit), so drifting
+    // sideways during a firefight bumps into a wall instead of silently
+    // dropping into the gutter or off the map. Sitting on the floor side
+    // (rather than projecting into the void) matters: the two curbs
+    // flanking one gutter never narrow its true 1m gap, so the pit is
+    // exactly as fall-into-able as before once you're past the lip -- see
+    // the 'death pit' test in physics.test.ts, which free-falls a player
+    // through the dead center of this same west gutter (x=-3.5) and must
+    // keep landing 'fell'. JUMP_SPEED (8) clears 0.5m in ~2 ticks at 30Hz,
+    // so a normal hop still crosses the curb freely -- falling stays
+    // possible, it just takes an actual jump (or getting knocked over one
+    // by an explosion), not a stray strafe key.
+    // West gutter has the two teleporter-alcove bridges (boxes 5/6), so its
+    // lane-edge curb is split into 3 segments each with gaps at z [-20,-16]
+    // and [16,20] to leave the bridge crossings open. East gutter has no
+    // bridge, so its lane-edge curb runs the full lane length uninterrupted.
+    // Rail-facing (gutter-side) curb segments that used to sit at x
+    // -4.3..-4 / 4..4.3 were removed (the trench fix): those knee-high
+    // lips blocked the gutter itself from the rail side, which fought the
+    // deliberate "falling takes a jump" design the lane-edge curbs (13-15,
+    // 16 below) already provide from the lane side -- see 'death pit' in
+    // physics.test.ts, still free-falling through this same gap.
+    { min: { x: -3, y: 0, z: -22 }, max: { x: -2.7, y: 0.5, z: -20 } }, // 13 west lane-edge curb, south seg
+    { min: { x: -3, y: 0, z: -16 }, max: { x: -2.7, y: 0.5, z: 16 } }, // 14 west lane-edge curb, mid seg
+    { min: { x: -3, y: 0, z: 20 }, max: { x: -2.7, y: 0.5, z: 22 } }, // 15 west lane-edge curb, north seg
+    { min: { x: 2.7, y: 0, z: -22 }, max: { x: 3, y: 0.5, z: 22 } }, // 16 east lane-edge curb
+    { min: { x: -6, y: 0, z: -22 }, max: { x: -5.7, y: 0.5, z: 22 } }, // 17 west outer-edge curb
+    { min: { x: 5.7, y: 0, z: -22 }, max: { x: 6, y: 0.5, z: 22 } }, // 18 east outer-edge curb
   ],
   boxColors: [
     0x2244aa, // cobalt base
@@ -50,10 +87,20 @@ export const gutter: GameMap = {
     0xbb6633, // cover (ember side)
     0xbb6633,
     0xbb6633,
+    0x777777, // guard rail curbs (13-18)
+    0x777777,
+    0x777777,
+    0x777777,
+    0x777777,
+    0x777777,
   ],
+  // Velocities scaled by k = sqrt(PLAYER_GRAVITY / GRAVITY) = sqrt(24/20)
+  // ~= 1.0954 from their original (0,9,-10)/(0,9,10) so the launched
+  // trajectory (a function of v^2/g) is unchanged under stepMovement's
+  // snappier PLAYER_GRAVITY (24 vs GRAVITY's 20).
   launchPads: [
-    { pos: { x: -1, y: 0, z: 0 }, radius: 1, velocity: { x: 0, y: 9, z: -10 } },
-    { pos: { x: 1, y: 0, z: 0 }, radius: 1, velocity: { x: 0, y: 9, z: 10 } },
+    { pos: { x: -1, y: 0, z: 0 }, radius: 1, velocity: { x: 0, y: 9.859, z: -10.954 } },
+    { pos: { x: 1, y: 0, z: 0 }, radius: 1, velocity: { x: 0, y: 9.859, z: 10.954 } },
   ],
   teleporters: [{ a: { x: -5, y: 0, z: -18 }, b: { x: -5, y: 0, z: 18 }, radius: 1 }],
   spawns: [

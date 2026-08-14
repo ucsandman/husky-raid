@@ -23,8 +23,11 @@ export type SoundName =
   | 'ui_click'
   | 'hit_tick'
   | 'hit_kill'
+  | 'headshot'
   | 'damage_taken'
   | 'heartbeat'
+  | 'footstep'
+  | 'land'
 
 export const ALL_SOUND_NAMES: readonly SoundName[] = [
   'shot_smg',
@@ -44,8 +47,11 @@ export const ALL_SOUND_NAMES: readonly SoundName[] = [
   'ui_click',
   'hit_tick',
   'hit_kill',
+  'headshot',
   'damage_taken',
   'heartbeat',
+  'footstep',
+  'land',
 ]
 
 export interface PlayOpts {
@@ -420,6 +426,18 @@ function synth(ctx: AudioContext, name: SoundName): AudioBuffer {
         }
       })
 
+    // Headshot ding: two-partial bright sine ping (2600Hz + 3800Hz), above
+    // hit_kill's register so a headshot reads as brighter/sharper than a
+    // regular kill confirmation, ~90ms decay.
+    case 'headshot':
+      return makeBuffer(ctx, 0.09, (data, sr) => {
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          const env = Math.exp(-t * 30) * Math.min(1, t / 0.002)
+          data[i] = (Math.sin(2 * Math.PI * 2600 * t) * 0.5 + Math.sin(2 * Math.PI * 3800 * t) * 0.5) * env
+        }
+      })
+
     // Damage taken: low lowpassed noise thud, ~90ms decay -- a body-hit
     // impact distinct from shield_hit's high "ping" (which only fires while
     // shield absorbs; this fires whenever the local player's own combined
@@ -443,6 +461,27 @@ function synth(ctx: AudioContext, name: SoundName): AudioBuffer {
           const beat1 = Math.exp(-Math.pow((t - 0.02) / 0.03, 2))
           const beat2 = Math.exp(-Math.pow((t - 0.13) / 0.035, 2)) * 0.75
           data[i] = Math.sin(2 * Math.PI * 60 * t) * (beat1 + beat2) * 0.9
+        }
+      })
+
+    // Lowpassed noise tick, ~35ms decay.
+    case 'footstep':
+      return makeBuffer(ctx, 0.035, (data, sr) => {
+        const n = noise(data.length)
+        applyLowpass(n, sr, () => 1800)
+        for (let i = 0; i < data.length; i++) data[i] = n[i] * Math.exp(-(i / sr) * 70) * 0.35
+      })
+
+    // Dull thud, sine 90Hz->60Hz over 60ms -- deliberately duller than
+    // damage_taken so it doesn't read as a hit.
+    case 'land':
+      return makeBuffer(ctx, 0.06, (data, sr) => {
+        let phase = 0
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          const freq = 90 - (90 - 60) * Math.min(1, t / 0.06)
+          phase += freq / sr
+          data[i] = Math.sin(2 * Math.PI * phase) * Math.exp(-t * 30) * 0.5
         }
       })
 

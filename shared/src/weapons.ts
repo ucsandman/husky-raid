@@ -56,7 +56,12 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   railspike: {
     name: 'Railspike',
     kind: 'hitscan',
-    damage: 100,
+    // Set to exactly MAX_SHIELD (70): a body hit cleanly zeroes the shield
+    // (visible/audible shield-pop) without ever touching health, so a
+    // single body shot never one-shots a full-shield target -- headshot
+    // (140, via headshotMult below) still always does. Was 100, which
+    // exceeded shield+health (100) and OHK'd on any body hit.
+    damage: 70,
     headshotMult: 2,
     rof: 0.75,
     magSize: 5,
@@ -143,9 +148,12 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   },
 }
 
+/** Sandbox's guaranteed precision starter: every loadout's weapon slot 0,
+ * never rolled into slot 1 either (removed from WEAPON_POOL below). */
+export const STARTER_WEAPON: WeaponId = 'triad_rifle'
+
 export const WEAPON_POOL: WeaponId[] = [
   'pulse_smg',
-  'triad_rifle',
   'railspike',
   'boomtube',
   'scattergun',
@@ -162,17 +170,16 @@ const GRENADE_SPLITS: { frag: number; mag: number }[] = [
   { frag: 0, mag: 2 },
 ]
 
-const EQUIPMENT_OPTIONS: (EquipmentId | null)[] = ['grapple', 'repulsor', 'camo', null]
+// No trailing null: sandbox loadouts always roll a piece of equipment.
+const EQUIPMENT_OPTIONS: EquipmentId[] = ['grapple', 'repulsor', 'camo']
 
 export function rollLoadout(rand: () => number): {
   weapons: [WeaponId, WeaponId]
   grenades: { frag: number; mag: number }
   equipment: EquipmentId | null
 } {
-  const first = Math.floor(rand() * WEAPON_POOL.length)
-  let second = Math.floor(rand() * (WEAPON_POOL.length - 1))
-  if (second >= first) second += 1
-  const weapons: [WeaponId, WeaponId] = [WEAPON_POOL[first], WEAPON_POOL[second]]
+  const second = WEAPON_POOL[Math.floor(rand() * WEAPON_POOL.length)]
+  const weapons: [WeaponId, WeaponId] = [STARTER_WEAPON, second]
 
   const grenades = GRENADE_SPLITS[Math.floor(rand() * GRENADE_SPLITS.length)]
   const equipment = EQUIPMENT_OPTIONS[Math.floor(rand() * EQUIPMENT_OPTIONS.length)]

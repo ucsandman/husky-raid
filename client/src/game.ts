@@ -1,6 +1,6 @@
 import * as THREE from 'three'
-import type { ServerMsg, SnapPlayer, Vec3, WeaponId } from '@riftlane/shared'
-import { EYE_HEIGHT, MAPS, MOVE_SPEED, clamp } from '@riftlane/shared'
+import type { GameMap, PlayerState, ServerMsg, SnapPlayer, Vec3, WeaponId } from '@riftlane/shared'
+import { EYE_HEIGHT, HITSCAN_MAX_RANGE, MAPS, MOVE_SPEED, WEAPONS, clamp, raycast, viewDir } from '@riftlane/shared'
 import { createScene, type SceneCtx } from './render/scene'
 import { buildMap } from './render/mapMesh'
 import { makeSoldier, updateSoldier } from './render/soldier'
@@ -28,6 +28,7 @@ const MAX_DT = 0.1
 
 const FOV_MAX_BUMP = 6 // degrees, at full MOVE_SPEED
 const FOV_LERP_TAU = 0.15 // seconds
+const FOOTSTEP_MIN_SPEED_FRAC = 0.15 // below this the player reads as standing still, not walking
 const LANDING_RECOVER_RATE = 5 // 1/s, same convention as KICK_RECOVER_RATE above
 const LANDING_DIP_DEPTH = 0.16 // meters, camera Y dip on landing
 const LANDING_DIP_VIEWMODEL_SCALE = 0.6
@@ -100,6 +101,7 @@ export class Game {
   private readonly prediction = new ClientPrediction()
   private sceneCtx: SceneCtx | null = null
   private mapGroup: THREE.Group | null = null
+  private map: GameMap | null = null
   private effects: EffectsSystem | null = null
   private readonly soldiers = new Map<string, THREE.Group>()
   private readonly viewmodels = new Map<WeaponId, THREE.Group>()
@@ -109,13 +111,14 @@ export class Game {
   private readonly prevShields = new Map<string, number>()
   private latestSnapshot: SnapshotMsg | null = null
   private bobPhase = 0
+  private footstepHalfCycle = 0 // Math.floor(bobPhase / Math.PI) as of the last footstep check
   private kickT = 1 // 1 = fully recovered, 0 = just fired
   private hud: Hud | null = null
 
   // ---- game-feel state (client-only juice, see feel.ts) -------------------
   private shakeRig = new ShakeRig()
   private recoilPitch = 0 // radians, decays exponentially toward 0
-  private baseFov = 75
+  private baseFov = 90 // matches render/scene.ts's FOV_DEGREES; immediately overwritten in start()
   private fovBump = 0 // additive degrees, lerped from horizontal speed
   private landingDipT = 1 // 1 = recovered, 0 = just landed
   private prevLookYaw = 0
@@ -135,6 +138,7 @@ export class Game {
     const map = MAPS[msg.mapName]
     if (!map) throw new Error(`unknown map: ${msg.mapName}`)
     this.localId = msg.yourId
+    this.map = map
     this.prediction.start(msg.yourId)
     this.prediction.setMap(map)
 
@@ -284,6 +288,7 @@ export class Game {
     if (prevLocal.vel.y < LANDING_FALL_VEL && Math.abs(curLocal.vel.y) < LANDING_SETTLE_VEL) {
       this.landingDipT = 0
       this.shakeRig.addTrauma(LANDING_TRAUMA)
+      audioEngine.play('land')
     }
   }
 
@@ -391,9 +396,30 @@ export class Game {
         this.shakeRig.update(dt, ctx.camera)
       }
 
-      for (const remote of this.remotePoses()) {
+      const remotes = this.remotePoses()
+      for (const remote of remotes) {
         const group = this.soldiers.get(remote.id)
         if (group) updateSoldier(group, remote)
+      }
+
+      // Halo-style red reticle: cosmetic-only client raycast against the
+      // same interpolated positions the soldiers are drawn at, so the
+      // reticle never flags a target the player can't actually see hit.
+      // Never touches sim state -- this is purely a HUD color toggle.
+      if (pose && this.map && localSnap?.alive) {
+        const weapon = WEAPONS[localSnap.weapons[localSnap.activeWeapon]]
+        const maxRange = weapon.maxRange ?? HITSCAN_MAX_RANGE
+        const aimHit = raycast(
+          eyePos(pose.pos),
+          viewDir(pose.yaw, pose.pitch),
+          maxRange,
+          this.map.boxes,
+          remotes as unknown as PlayerState[],
+          this.localId ?? ''
+        )
+        this.hud?.setTargetTracked(aimHit.kind === 'player')
+      } else {
+        this.hud?.setTargetTracked(false)
       }
 
       effects.syncProjectiles(snap.projectiles)
@@ -409,6 +435,7 @@ export class Game {
         const prevShield = this.prevShields.get(p.id)
         if (prevShield !== undefined && prevShield > 0 && p.shield <= 0 && p.alive) {
           effects.spawnShieldSpark({ x: p.pos.x, y: p.pos.y + 1, z: p.pos.z })
+          if (p.id === this.localId) this.hud?.notifyShieldBreak()
         }
         this.prevShields.set(p.id, p.shield)
       }
@@ -478,6 +505,15 @@ export class Game {
     this.bobPhase += dt * (2 + speed * 0.6)
     const bobY = Math.sin(this.bobPhase * 2) * BOB_AMP_Y * speedFrac
     const bobX = Math.sin(this.bobPhase) * BOB_AMP_X * speedFrac
+
+    // Footstep once per half bob-cycle, local player only, non-positional --
+    // gated on speedFrac so standing still (bobPhase still drifts at its
+    // idle baseline rate above) never ticks a step.
+    const footstepHalfCycle = Math.floor(this.bobPhase / Math.PI)
+    if (local.alive && speedFrac > FOOTSTEP_MIN_SPEED_FRAC && footstepHalfCycle !== this.footstepHalfCycle) {
+      audioEngine.play('footstep')
+    }
+    this.footstepHalfCycle = footstepHalfCycle
 
     this.kickT = Math.min(1, this.kickT + dt * KICK_RECOVER_RATE)
     const kick = (1 - this.kickT) * KICK_DEPTH
@@ -553,6 +589,7 @@ export class Game {
 
     this.sceneCtx = null
     this.mapGroup = null
+    this.map = null
     this.effects = null
     this.soldiers.clear()
     this.viewmodels.clear()

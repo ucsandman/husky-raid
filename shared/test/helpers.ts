@@ -36,6 +36,12 @@ export function makeTestPlayer(overrides?: Partial<PlayerState>): PlayerState {
     deaths: 0,
     captures: 0,
     teleportCooldownUntil: 0,
+    sprinting: false,
+    sliding: false,
+    slideTimeRemaining: 0,
+    slideCooldownRemaining: 0,
+    coyoteTimeRemaining: 0,
+    jumpBufferRemaining: 0,
     ...overrides,
   }
 }

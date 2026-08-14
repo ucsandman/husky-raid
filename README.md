@@ -1,14 +1,16 @@
 # RIFTLANE
 
-RIFTLANE is a browser-based 8-player capture-the-flag arena shooter, built as an original IP inspired by Husky Raid. Two teams of four fight across a small map, grappling and repulsor-jumping between platforms, stealing the enemy flag, and capturing it at their own base. Matches end at 3 captures or when the clock runs out. Any empty human slots are filled by server-side bots, so a match can start (and keep running through a disconnect) with as few as one human player.
+RIFTLANE is a browser-based 8-player capture-the-flag arena shooter, built as an original IP inspired by Husky Raid. Two teams of four fight across a small map, grappling and repulsor-jumping between platforms, stealing the enemy flag, and capturing it at their own base. Movement is Halo-style: sprint, slide, clamber onto ledges mid-air, and forgiving jump timing. Everyone spawns with a Triad Rifle plus one random weapon from the pool. Matches end at 3 captures or when the clock runs out. Any empty human slots are filled by server-side bots, so a match can start (and keep running through a disconnect) with as few as one human player.
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
 | `W A S D` | Move |
+| `Shift` | Sprint (forward, cancels while firing) |
+| `Ctrl` | Slide (at speed; jump out of it to keep momentum) |
 | Mouse | Look |
-| `Space` | Jump |
+| `Space` | Jump (with coyote time and a landing buffer) |
 | Left click | Fire |
 | `F` | Melee |
 | `G` | Throw grenade |

@@ -99,6 +99,7 @@ export class Hud {
   private readonly killBannerTitle: HTMLDivElement
   private readonly killBannerStreak: HTMLDivElement
   private readonly damageVignette: HTMLDivElement
+  private readonly shieldBreakVignette: HTMLDivElement
   private readonly damageIndicator: HTMLDivElement
   private readonly lowHealthVignette: HTMLDivElement
   private readonly shieldFill: HTMLDivElement
@@ -138,9 +139,10 @@ export class Hud {
 
     this.lowHealthVignette = el('div', 'hud-vignette hud-vignette--low-health')
     this.damageVignette = el('div', 'hud-vignette hud-vignette--damage')
+    this.shieldBreakVignette = el('div', 'hud-vignette hud-vignette--shield-break')
     this.damageIndicator = el('div', 'hud-damage-indicator')
     this.damageIndicator.appendChild(el('div', 'hud-damage-indicator-arrow'))
-    this.root.append(this.lowHealthVignette, this.damageVignette, this.damageIndicator)
+    this.root.append(this.lowHealthVignette, this.damageVignette, this.shieldBreakVignette, this.damageIndicator)
 
     this.killBanner = el('div', 'hud-kill-banner')
     this.killBannerTitle = el('div', 'hud-kill-banner-title')
@@ -265,6 +267,13 @@ export class Hud {
 
   // ---- build helpers -----------------------------------------------------
 
+  /** Halo-style red reticle: driven every render frame from game.ts's
+   * cosmetic aim raycast (see game.ts's aimHit) -- toggles a CSS class only,
+   * never touches sim state or the crosshair's kick/recovery mechanics. */
+  setTargetTracked(active: boolean): void {
+    this.crosshair.classList.toggle('hud-crosshair--target', active)
+  }
+
   private buildCrosshair(): HTMLDivElement {
     const wrap = el('div', 'hud-crosshair')
     for (const dir of ['n', 's', 'w', 'e'] as const) {
@@ -332,9 +341,9 @@ export class Hud {
         this.bumpTally(ev.victimId, 'deaths', players)
         this.addKillFeedEntry(ev.killerId, ev.victimId, ev.weapon, localId, isSelfKill)
         if (!isSelfKill && ev.killerId === localId) {
-          this.showHitMarker(true)
+          this.showHitMarker(true, ev.head)
           const victimName = this.nameCache.get(ev.victimId) ?? '???'
-          this.showKillBanner(victimName)
+          this.showKillBanner(victimName, ev.head)
         }
       } else if (ev.type === 'capture') {
         this.bumpTally(ev.playerId, 'captures', players)
@@ -384,14 +393,17 @@ export class Hud {
   }
 
   /** `kill` picks the stronger, longer-lived marker style + sound; a plain
-   * damaging (non-lethal) hit uses the regular one. Public so game.ts can
-   * fire it for a diffed "local shot damaged someone" hit -- see
+   * damaging (non-lethal) hit uses the regular one. `head` layers the
+   * headshot ding + a gold marker style on top of a kill. Public so game.ts
+   * can fire it for a diffed "local shot damaged someone" hit -- see
    * game.ts's detectLocalHit() for why that has to be a heuristic (no
    * SimEvent on the wire distinguishes a hit from a miss). */
-  showHitMarker(kill: boolean): void {
+  showHitMarker(kill: boolean, head = false): void {
     this.hitmarker.classList.add('hud-hitmarker--show')
     this.hitmarker.classList.toggle('hud-hitmarker--kill', kill)
+    this.hitmarker.classList.toggle('hud-hitmarker--head', head)
     audioEngine.play(kill ? 'hit_kill' : 'hit_tick')
+    if (head) audioEngine.play('headshot')
     const t = setTimeout(
       () => {
         this.hitmarker.classList.remove('hud-hitmarker--show')
@@ -402,11 +414,11 @@ export class Hud {
     this.pendingTimeouts.add(t)
   }
 
-  private showKillBanner(victimName: string): void {
+  private showKillBanner(victimName: string, head: boolean): void {
     this.killStreakCount += 1
     this.killStreakRemaining = KILL_STREAK_WINDOW
 
-    this.killBannerTitle.textContent = `ELIMINATED ${victimName}`
+    this.killBannerTitle.textContent = `ELIMINATED ${victimName}${head ? ' — HEADSHOT' : ''}`
     this.killBannerStreak.textContent = KILL_STREAK_LABEL[this.killStreakCount] ?? (this.killStreakCount >= 4 ? `${this.killStreakCount}x ELIMINATION STREAK` : '')
 
     this.killBanner.classList.remove('hud-kill-banner--show')
@@ -449,6 +461,20 @@ export class Hud {
       this.pendingTimeouts.delete(t2)
     }, DAMAGE_PULSE_MS)
     this.pendingTimeouts.add(t2)
+  }
+
+  /** Called from game.ts's shield-diff loop when the local player's own
+   * shield just broke. Visual-only -- game.ts already plays the
+   * 'shield_break' SFX from the same diff, so this doesn't duplicate it. */
+  notifyShieldBreak(): void {
+    this.shieldBreakVignette.classList.remove('hud-vignette--pulse')
+    void this.shieldBreakVignette.offsetWidth
+    this.shieldBreakVignette.classList.add('hud-vignette--pulse')
+    const t = setTimeout(() => {
+      this.shieldBreakVignette.classList.remove('hud-vignette--pulse')
+      this.pendingTimeouts.delete(t)
+    }, DAMAGE_PULSE_MS)
+    this.pendingTimeouts.add(t)
   }
 
   // ---- per-frame local-player panels --------------------------------------

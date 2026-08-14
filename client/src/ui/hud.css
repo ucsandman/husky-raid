@@ -35,6 +35,14 @@
   position: absolute;
   background: var(--text);
   box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+  transition: background-color 0.05s ease;
+}
+
+/* Halo-style red reticle: toggled by Hud.setTargetTracked() every frame
+   while the crosshair sits over a living enemy in range. */
+.hud-crosshair--target .hud-crosshair-line {
+  background: var(--danger);
+  box-shadow: 0 0 4px var(--danger);
 }
 
 .hud-crosshair-line--n,
@@ -120,6 +128,21 @@
   box-shadow: 0 0 8px var(--warn);
 }
 
+/* Headshot: layers on top of --kill, ~15% larger and gold/white instead of
+   the plain kill marker's amber. */
+.hud-hitmarker--head {
+  width: 39px;
+  height: 39px;
+  margin: -19.5px 0 0 -19.5px;
+}
+
+.hud-hitmarker--head::before,
+.hud-hitmarker--head::after {
+  height: 3px;
+  background: #fff2c2;
+  box-shadow: 0 0 10px gold;
+}
+
 /* ---- damage feedback (full-screen vignette + directional source) ------ */
 
 .hud-vignette {
@@ -139,6 +162,23 @@
 
 .hud-vignette--damage.hud-vignette--pulse {
   opacity: 0.55;
+  transition: opacity 0.1s ease-out;
+}
+
+/* Cyan/white edge flash for a shield break -- distinct from the red damage
+   vignette above so the two never read as the same event. */
+.hud-vignette--shield-break {
+  background: radial-gradient(
+    ellipse at center,
+    transparent 40%,
+    rgba(210, 245, 255, 0.4) 60%,
+    rgba(80, 220, 255, 0.75) 100%
+  );
+  transition: opacity 0.1s ease-out;
+}
+
+.hud-vignette--shield-break.hud-vignette--pulse {
+  opacity: 0.6;
   transition: opacity 0.1s ease-out;
 }
 

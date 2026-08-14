@@ -4,10 +4,13 @@ export const SNAPSHOT_RATE = 20
 export const MOVE_SPEED = 7
 export const FLAG_CARRIER_SPEED_MULT = 0.9
 export const ACCEL_GROUND = 60
-export const ACCEL_AIR = 15
+export const ACCEL_AIR = 20
 export const FRICTION_GROUND = 8
 export const GRAVITY = 20
 export const JUMP_SPEED = 8
+// Snappier jump arc: used ONLY by stepMovement's own vel.y integration.
+// GRAVITY above stays 20 for grenade/projectile arcs in combat.ts/sim.ts.
+export const PLAYER_GRAVITY = 24
 export const PLAYER_RADIUS = 0.4
 export const PLAYER_HEIGHT = 1.8
 export const EYE_HEIGHT = 1.6
@@ -34,11 +37,40 @@ export const REPULSOR_IMPULSE = 14
 export const TELEPORT_COOLDOWN = 1
 export const TELEPORT_ARRIVAL_OFFSET = 1.5
 
-// Combat: hit-sphere geometry (raycast + projectile contact tests share these)
+// Movement: coyote time (jump still fires shortly after walking off an
+// edge) and jump buffer (an early jump press fires on landing) -- both
+// countdowns, same convention as teleportCooldownUntil.
+export const COYOTE_TIME = 0.15
+export const JUMP_BUFFER_TIME = 0.15
+
+// Movement: sprint (hold-to-run) and slide (grounded, forward-momentum burst).
+export const SPRINT_SPEED_MULT = 1.3
+export const SPRINT_MIN_FORWARD = 0.1
+export const SLIDE_SPEED_MULT = 1.3
+export const SLIDE_DURATION = 0.65
+export const SLIDE_FRICTION = 2
+export const SLIDE_MIN_SPEED = 5.5
+export const SLIDE_COOLDOWN = 0.4
+
+// Movement: airborne ledge clamber (auto-mantle onto a ledge in front of
+// the player while jumping/falling into it -- grounded strafes into the
+// same ledge are never affected, see tryClamber's airborne-only gating).
+export const CLAMBER_MIN_HEIGHT = 0.6
+export const CLAMBER_MAX_HEIGHT = 1.4
+export const CLAMBER_CHECK_DISTANCE = 0.6
+export const CLAMBER_BOOST_SPEED = 6
+
+// Sandbox: melee lunge speed toward the target, horizontal only, grounded only.
+export const MELEE_LUNGE_SPEED = 8
+
+// Combat: hit-sphere geometry (raycast + projectile contact tests share these).
+// Widened from 0.5/0.25 (Halo-style generous hit volumes -- the actual
+// collision AABB stays PLAYER_RADIUS 0.4, this constant only controls how
+// forgiving a shot is, not where the body physically blocks movement).
 export const PLAYER_BODY_CENTER_Y = 0.9
-export const PLAYER_BODY_RADIUS = 0.5
+export const PLAYER_BODY_RADIUS = 0.58
 export const PLAYER_HEAD_CENTER_Y = 1.55
-export const PLAYER_HEAD_RADIUS = 0.25
+export const PLAYER_HEAD_RADIUS = 0.3
 
 // Combat: grenades (not weapons, so not in WEAPONS table).
 export const FRAG_DAMAGE = 90

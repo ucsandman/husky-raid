@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { AABB, GameMap, Team } from '@riftlane/shared'
-import { TEAM_GLOW, TELEPORT_A_COLOR, TELEPORT_B_COLOR, type MaterialLibrary } from './materials'
+import { HAZARD_ACCENT, TEAM_GLOW, TELEPORT_A_COLOR, TELEPORT_B_COLOR, type MaterialLibrary } from './materials'
 import {
   boundsOf,
   boxGeom,
@@ -19,8 +19,9 @@ const GROUND_SIZE = 700
 const GROUND_DROP = 8
 const TRIM_H = 0.09
 const TRIM_W = 0.26
+const RAIL_CAP_H = 0.06
 
-type BoxRole = 'floor' | 'cover' | 'base' | 'structure'
+type BoxRole = 'floor' | 'cover' | 'base' | 'structure' | 'rail'
 
 function teamOfColor(color: number): Team | null {
   const r = (color >> 16) & 0xff
@@ -32,13 +33,16 @@ function teamOfColor(color: number): Team | null {
 
 /** Splits the sim's untyped AABB list into art roles. The sim only knows
  * "solid box", so the read is geometric: a small standing block is cover, a
- * wide flat slab carrying a flag stand is a base platform, any other wide
- * flat slab is walkable deck, and anything left over gets plain hull. */
+ * knee-high thin box is a guard-rail (checked before the floor rule so a
+ * narrow curb never gets misread as walkable deck), a wide flat slab
+ * carrying a flag stand is a base platform, any other wide flat slab is
+ * walkable deck, and anything left over gets plain hull. */
 function roleOf(box: AABB, map: GameMap): BoxRole {
   const sx = box.max.x - box.min.x
   const sy = box.max.y - box.min.y
   const sz = box.max.z - box.min.z
   if (sx <= 3 && sz <= 3 && sy >= 0.6) return 'cover'
+  if (sy <= 0.6 && Math.min(sx, sz) <= 0.5) return 'rail'
   if (sy <= 1.6 && sx * sz >= 3) {
     const carriesStand = map.flagStands.some(
       (s) => s.x >= box.min.x && s.x <= box.max.x && s.z >= box.min.z && s.z <= box.max.z && Math.abs(s.y - box.max.y) < 0.6
@@ -58,6 +62,17 @@ function topEdgeTrim(box: AABB, out: THREE.BufferGeometry[]): void {
   out.push(boxGeom(sx, TRIM_H, TRIM_W, cx, y, box.max.z - TRIM_W / 2))
   out.push(boxGeom(TRIM_W, TRIM_H, sz, box.min.x + TRIM_W / 2, y, cz))
   out.push(boxGeom(TRIM_W, TRIM_H, sz, box.max.x - TRIM_W / 2, y, cz))
+}
+
+/** Thin high-vis cap on top of a guard-rail body -- the "this is a wall, not
+ * a lane" read at a glance, without repainting the whole rail hull. */
+function railCap(box: AABB, out: THREE.BufferGeometry[]): void {
+  const sx = box.max.x - box.min.x
+  const sz = box.max.z - box.min.z
+  const cx = (box.min.x + box.max.x) / 2
+  const cz = (box.min.z + box.max.z) / 2
+  const y = box.max.y - RAIL_CAP_H / 2 + 0.01
+  out.push(boxGeom(sx, RAIL_CAP_H, sz, cx, y, cz))
 }
 
 /** Two emissive guide strips inset along the deck's long axis -- the lane's
@@ -112,10 +127,10 @@ function coverBlock(
 /**
  * Builds one static Group for a match's map. Everything repeated is merged
  * or instanced so the whole world stays inside ~40 draw calls: one deck
- * mesh, one trim mesh, one lane-strip mesh, one cover hull per team, then
- * the authored landmarks (base gates, flag beacons, jump pads, teleporter
- * frames), the perimeter railing, floating rift crystals and three rings of
- * backdrop towers.
+ * mesh, one trim mesh, one lane-strip mesh, one cover hull per team, one
+ * guard-rail hull and one guard-rail cap mesh, then the authored landmarks
+ * (base gates, flag beacons, jump pads, teleporter frames), the perimeter
+ * railing, floating rift crystals and three rings of backdrop towers.
  *
  * Meshes tagged `userData.pulse` / `shimmer` / `padPulse` / `spin` / `bob`
  * are animated by effects.ts's tickMapPulse each frame -- mapMesh.ts only
@@ -133,6 +148,8 @@ export function buildMap(map: GameMap, lib: MaterialLibrary): THREE.Group {
   const trimParts: THREE.BufferGeometry[] = []
   const stripParts: THREE.BufferGeometry[] = []
   const structureParts: THREE.BufferGeometry[] = []
+  const railParts: THREE.BufferGeometry[] = []
+  const railCapParts: THREE.BufferGeometry[] = []
   const coverHull: Record<number, THREE.BufferGeometry[]> = { 0: [], 1: [], 2: [] }
   const coverPlate: THREE.BufferGeometry[] = []
   const coverGlow: Record<number, THREE.BufferGeometry[]> = { 0: [], 1: [], 2: [] }
@@ -162,6 +179,11 @@ export function buildMap(map: GameMap, lib: MaterialLibrary): THREE.Group {
       structureParts.push(boxGeom(sx, sy, sz, cx, cy, cz))
       return
     }
+    if (role === 'rail') {
+      railParts.push(boxGeom(sx, sy, sz, cx, cy, cz))
+      railCap(box, railCapParts)
+      return
+    }
     floors.push(box)
     deckParts.push(boxGeom(sx, sy, sz, cx, cy, cz))
     topEdgeTrim(box, trimParts)
@@ -189,6 +211,16 @@ export function buildMap(map: GameMap, lib: MaterialLibrary): THREE.Group {
     structure.castShadow = true
     structure.receiveShadow = true
     group.add(structure)
+  }
+  const rails = mergeMesh(railParts, lib.hullDark, 'curbRails')
+  if (rails) {
+    rails.castShadow = true
+    rails.receiveShadow = true
+    group.add(rails)
+  }
+  const railCaps = mergeMesh(railCapParts, lib.signal(HAZARD_ACCENT), 'curbRailCaps')
+  if (railCaps) {
+    group.add(railCaps)
   }
 
   for (const key of [0, 1, 2]) {

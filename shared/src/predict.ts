@@ -61,6 +61,14 @@ export class Predictor {
     // Misprediction here is cosmetic (an early/late re-teleport window)
     // and self-heals within TELEPORT_COOLDOWN seconds of the next snapshot.
     state.teleportCooldownUntil = 0
+    // SnapPlayer carries none of these either -- same self-heals-within-a-
+    // snapshot reasoning as teleportCooldownUntil above.
+    state.sprinting = false
+    state.sliding = false
+    state.slideTimeRemaining = 0
+    state.slideCooldownRemaining = 0
+    state.coyoteTimeRemaining = 0
+    state.jumpBufferRemaining = 0
 
     let keepFrom = this.pending.length
     for (let i = 0; i < this.pending.length; i++) {

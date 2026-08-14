@@ -11,6 +11,7 @@ import {
   MAX_SHIELD,
   MAX_HEALTH,
   CAMO_DURATION,
+  MELEE_LUNGE_SPEED,
 } from '../src/constants'
 import { makeInput } from './helpers'
 
@@ -172,6 +173,7 @@ describe('MatchSim: suicide in pit', () => {
 
     expect(fellEvent).toBeDefined()
     expect((fellEvent as { killerId: string }).killerId).toBe('a')
+    expect((fellEvent as { head: boolean }).head).toBe(false)
     expect(a.deaths).toBe(1)
     expect(a.kills).toBe(0)
   })
@@ -343,5 +345,73 @@ describe('MatchSim: camo breaks on shooting (fix 5)', () => {
     sim2.setInput('c', makeInput({ yaw: c.yaw }))
     sim2.tick(now)
     expect(c.camoUntil).toBe(now + CAMO_DURATION)
+  })
+})
+
+describe('MatchSim: melee lunge (task 6)', () => {
+  it('a grounded melee hit lunges the attacker toward the target, horizontal only', () => {
+    const sim = new MatchSim('gutter', 40)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    // Pure flat center-lane ground (same spot physics.test.ts's 'walks
+    // forward on flat ground' uses), clear of the launch pads at x=-1/1,
+    // z=0 (radius 1) so this player stays genuinely grounded.
+    a.pos = { x: 0, y: 0, z: -15 }
+    a.yaw = 0 // forward = +z
+    a.vel = { x: 0, y: 0, z: 0 }
+    b.pos = { x: 0, y: 0, z: -13.5 } // within MELEE_RANGE (2), dead ahead
+
+    sim.setInput('a', makeInput({ yaw: 0, melee: true }))
+    sim.tick(TICK_DT)
+
+    expect(Math.hypot(a.vel.x, a.vel.z)).toBeCloseTo(MELEE_LUNGE_SPEED, 1)
+    expect(a.vel.y).toBe(0)
+  })
+})
+
+describe('MatchSim: kill event head flag (task 7)', () => {
+  it('a railspike headshot kill emits head:true', () => {
+    const sim = new MatchSim('gutter', 41)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    a.weapons = ['railspike', 'railspike']
+    a.ammo = [5, 5]
+    a.activeWeapon = 0
+    // Both at pos.y=0: eye height (1.6) sits just above the body sphere's
+    // top (0.9+0.58=1.48) but inside the head sphere (1.55 +/- 0.3), so a
+    // flat (pitch=0) shot is a clean headshot by construction.
+    a.pos = { x: 0, y: 0, z: -20 }
+    a.yaw = 0
+    a.pitch = 0
+    b.pos = { x: 0, y: 0, z: -15 }
+
+    sim.setInput('a', makeInput({ yaw: 0, pitch: 0, fire: true }))
+    const events = sim.tick(TICK_DT)
+    const kill = events.find((e) => e.type === 'kill' && e.victimId === 'b')
+    expect(kill).toBeDefined()
+    expect((kill as { head: boolean }).head).toBe(true)
+  })
+
+  it('a railspike body-shot kill emits head:false', () => {
+    const sim = new MatchSim('gutter', 42)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    a.weapons = ['railspike', 'railspike']
+    a.ammo = [5, 5]
+    a.activeWeapon = 0
+    a.pos = { x: 0, y: 0, z: -20 }
+    a.yaw = 0
+    // Pitch aimed at the body sphere's center (0, 0.9, -15) from the eye
+    // (0, 1.6, -20): dy=-0.7 over dz=5, well clear of the head sphere.
+    a.pitch = Math.atan2(-0.7, 5)
+    b.pos = { x: 0, y: 0, z: -15 }
+    b.shield = 0
+    b.health = 1 // one more railspike body hit (70) overkills -> a kill, not just a shield_break
+
+    sim.setInput('a', makeInput({ yaw: 0, pitch: a.pitch, fire: true }))
+    const events = sim.tick(TICK_DT)
+    const kill = events.find((e) => e.type === 'kill' && e.victimId === 'b')
+    expect(kill).toBeDefined()
+    expect((kill as { head: boolean }).head).toBe(false)
   })
 })

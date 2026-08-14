@@ -1,15 +1,19 @@
 import * as THREE from 'three'
 import type { SimEvent, SnapProjectile, Vec3 } from '@riftlane/shared'
+import { viewDir } from '@riftlane/shared'
 import { disposeObject3D } from './dispose'
 import { makeFlareTexture, makeSoftDotTexture, makeStreakTexture } from './materials'
 
-const TRACER_LIFE = 0.11
+const TRACER_LIFE = 0.09
 const MUZZLE_LIFE = 0.07
 const EXPLOSION_LIFE = 0.34
 const RING_LIFE = 0.42
 const SPARK_LIFE = 0.3
-const TRACER_LENGTH = 30
-const TRACER_RADIUS = 0.045
+// Halo-style thin readable tracers, not fat glowing orbs: was 30 long x
+// 0.045 radius, which read as a persistent fat laser beam, especially
+// stacked across a 10rps weapon like pulse_smg.
+const TRACER_LENGTH = 20
+const TRACER_RADIUS = 0.02
 const TRACER_POOL = 24
 const MUZZLE_POOL = 12
 const EXPLOSION_POOL = 8
@@ -18,7 +22,9 @@ const SPARK_POOL = 12
 const SPARK_POINTS = 22
 const SPARK_BURST_RADIUS = 0.5
 
-const TRACER_COLOR = 0xfff0b0
+// Bright white core (was a warm amber tint) reads crisper at speed and
+// against the arena's cool lighting -- muzzle flash below keeps the amber.
+const TRACER_COLOR = 0xffffff
 const MUZZLE_COLOR = 0xffe08a
 const EXPLOSION_COLOR = 0xff8a3c
 const SHOCKWAVE_COLOR = 0xffc27a
@@ -43,18 +49,6 @@ interface ProjectileKit {
   coreMat: THREE.Material
   glow: THREE.BufferGeometry
   glowMat: THREE.Material
-}
-
-/** Same forward-vector convention as sim.ts's private viewDir (yaw=0 faces
- * +z) -- duplicated here because the protocol never sends hit points, only
- * shooter yaw/pitch, so tracers are drawn as a fixed-length ray rather than
- * a real raycast against the world (that logic already lives server-side). */
-function viewDir(yaw: number, pitch: number): Vec3 {
-  return {
-    x: Math.sin(yaw) * Math.cos(pitch),
-    y: Math.sin(pitch),
-    z: Math.cos(yaw) * Math.cos(pitch),
-  }
 }
 
 /**
@@ -371,11 +365,14 @@ export class EffectsSystem {
       emissiveIntensity: 1.8,
       roughness: 0.4,
     })
-    const glow = new THREE.SphereGeometry(spec.size * 2.4, 10, 8)
+    // Halo-style thin readable projectiles: the glow halo used to be 2.4x
+    // the core size at 0.3 opacity, which additively bloomed into a fat
+    // blob that swallowed the actual bullet shape. Trimmed to a tight rim.
+    const glow = new THREE.SphereGeometry(spec.size * 1.4, 10, 8)
     const glowMat = new THREE.MeshBasicMaterial({
       color: spec.color,
       transparent: true,
-      opacity: 0.3,
+      opacity: 0.22,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       fog: false,

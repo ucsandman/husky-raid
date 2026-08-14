@@ -335,5 +335,7 @@ function sanitizeInput(input: PlayerInput): PlayerInput {
     grenade: !!input.grenade,
     equipment: !!input.equipment,
     swap: !!input.swap,
+    sprint: !!input.sprint,
+    slideRequest: !!input.slideRequest,
   }
 }

@@ -7,6 +7,9 @@ import type { GameMap } from '../map'
 // A teleporter pair cuts straight across the U's gap at z = -10, well
 // shorter than walking all the way around through the joint. A launch pad
 // and grapple-tagged edges reach a high walkway (y=3) over the joint.
+// Each leg carries guard-rail curbs on both its outer and inner edges --
+// see boxes 11-14 below -- since a 4m plank flanked by void on both sides
+// is otherwise one bad strafe from a death pit.
 export const hairpin: GameMap = {
   name: 'hairpin',
   boxes: [
@@ -21,6 +24,15 @@ export const hairpin: GameMap = {
     { min: { x: -11, y: 0, z: 9.25 }, max: { x: -9, y: 1, z: 10.75 } }, // 8 cover, left leg
     { min: { x: 9, y: 0, z: -5.75 }, max: { x: 11, y: 1, z: -4.25 } }, // 9 cover, right leg
     { min: { x: 9, y: 0, z: 9.25 }, max: { x: 11, y: 1, z: 10.75 } }, // 10 cover, right leg
+    // Guard-rail curbs (0.5m, same rationale as gutter.ts): each leg is a
+    // 4m plank with open void on BOTH sides for most of its length -- the
+    // outside (x <-12 / x >12) and the inside gap between the two legs
+    // (x in (-8,8), open until the pad-approach floor fills it at z>=26).
+    // Curbs sit on the void side so the 4m walkable width is untouched.
+    { min: { x: -12.3, y: 0, z: -30 }, max: { x: -12, y: 0.5, z: 32 } }, // 11 left leg outer curb
+    { min: { x: 12, y: 0, z: -30 }, max: { x: 12.3, y: 0.5, z: 32 } }, // 12 right leg outer curb
+    { min: { x: -8, y: 0, z: -30 }, max: { x: -7.7, y: 0.5, z: 26 } }, // 13 left leg inner curb
+    { min: { x: 7.7, y: 0, z: -30 }, max: { x: 8, y: 0.5, z: 26 } }, // 14 right leg inner curb
   ],
   boxColors: [
     0x777777, // left leg floor
@@ -34,8 +46,14 @@ export const hairpin: GameMap = {
     0x3355bb,
     0xbb6633, // cover (ember side)
     0xbb6633,
+    0x777777, // guard rail curbs (11-14)
+    0x777777,
+    0x777777,
+    0x777777,
   ],
-  launchPads: [{ pos: { x: 0, y: 0, z: 26 }, radius: 1, velocity: { x: 0, y: 12, z: 8 } }],
+  // Velocity scaled by k = sqrt(PLAYER_GRAVITY / GRAVITY) = sqrt(24/20)
+  // ~= 1.0954 from its original (0,12,8), same rationale as gutter's pads.
+  launchPads: [{ pos: { x: 0, y: 0, z: 26 }, radius: 1, velocity: { x: 0, y: 13.145, z: 8.763 } }],
   teleporters: [{ a: { x: -10, y: 0, z: -10 }, b: { x: 10, y: 0, z: -10 }, radius: 1 }],
   spawns: [
     [
