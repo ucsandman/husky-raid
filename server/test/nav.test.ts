@@ -113,8 +113,16 @@ describe('Navigator.steer: straight two-node path', () => {
 describe('Navigator.steer: unstick re-paths after displacement', () => {
   it('recovers and still reaches the goal after being knocked 10m off the current edge', () => {
     const map: GameMap = MAPS.gutter
-    const start = map.waypoints[1].pos // (0, 0, -18)
-    const goal = map.waypoints[7].pos // (0, 0, 18), far down the lane
+    const start = map.waypoints[3].pos // (0, 0, -6)
+    // (0, 0, 12), 18m down the lane. Deliberately not node 1 -> node 7 (or
+    // base -> base): with the fix to a true-optimal Dijkstra search (h=0,
+    // see nav.ts), those endpoints are each close enough to a teleporter
+    // alcove that the truly shortest path detours through the teleporter
+    // instead of walking the lane -- the same reason test 1 above uses
+    // 0 -> 4 rather than 0 -> 8. Nodes 3 -> 6 stay solidly lane-optimal
+    // (lane cost 18 vs. ~30 through the teleporter and back), so the bot's
+    // undisturbed route is a predictable straight walk down the lane.
+    const goal = map.waypoints[6].pos
 
     const p = makeBotTestPlayer({ pos: { ...start } })
     const nav = new Navigator()

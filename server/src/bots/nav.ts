@@ -36,18 +36,21 @@ export function nearestWaypoint(map: GameMap, pos: Vec3): number {
 
 /**
  * A* over the map's waypoint graph (undirected -- edges are walked in
- * either direction). Euclidean-distance heuristic and edge cost, except
- * teleporter edges which cost a flat TELEPORTER_EDGE_COST regardless of
- * the real distance between their endpoints. Graphs here are ~15 nodes, so
- * this scans the open set for the lowest f-score each step rather than
- * using a binary heap.
+ * either direction). Edge cost is euclidean distance, except teleporter
+ * edges which cost a flat TELEPORTER_EDGE_COST regardless of the real
+ * distance between their endpoints (often tens of meters). That non-metric
+ * cost breaks admissibility of a euclidean heuristic: h(n) would sometimes
+ * overestimate the true remaining cost near a teleporter, which can make
+ * A* return a non-optimal path. Graphs here are ~15 nodes, so exhaustive
+ * search is free -- h is fixed at 0, making this plain Dijkstra (still
+ * O(n^2) via linear open-set scan rather than a heap, per the same "tiny
+ * graph" reasoning).
  */
 export function findPath(map: GameMap, fromWp: number, toWp: number): number[] {
   if (fromWp === toWp) return [fromWp]
 
   const n = map.waypoints.length
-  const goalPos = map.waypoints[toWp].pos
-  const h = (i: number) => euclid(map.waypoints[i].pos, goalPos)
+  const h = (_i: number) => 0
 
   const open: number[] = [fromWp]
   const gScore = new Array<number>(n).fill(Infinity)
@@ -189,6 +192,8 @@ export class Navigator {
 
     const targetNode = this.path[this.pathIndex]
     const targetPos = map.waypoints[targetNode].pos
+    // pathIndex 0 is the off-graph approach leg (current position -> path[0]), which has
+    // no real map edge behind it -- default to 'walk' (so jump/wantGrapple below stay off).
     const edgeKind = this.pathIndex > 0 ? findEdgeKind(map, this.path[this.pathIndex - 1], targetNode) : 'walk'
 
     const yaw = yawTo(p.pos, targetPos)
