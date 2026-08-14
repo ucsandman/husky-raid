@@ -211,6 +211,16 @@ body {
   border-color: var(--cobalt);
 }
 
+/* Keyboard focus gets an explicit ring on top of the border tint, so
+   tabbing through the menu is always visible. Mouse focus keeps the
+   quieter border-only treatment above. */
+.btn:focus-visible,
+.text-input:focus-visible,
+.range-input:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 2px;
+}
+
 .text-input--code {
   font-family: var(--mono);
   letter-spacing: 0.2em;
@@ -309,6 +319,16 @@ body {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+
+  .btn {
+    transition: none;
+  }
+}
+
 .room-code-row {
   display: flex;
   align-items: center;
@@ -376,7 +396,9 @@ body {
   padding: 0.15rem 0.4rem;
   border-radius: 4px;
   background: var(--border);
-  color: var(--text-dim);
+  /* --text-dim on --border lands under 4.5:1 at this tiny size; full
+     --text keeps the BOT tag readable. */
+  color: var(--text);
 }
 
 .scoreboard {

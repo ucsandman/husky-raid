@@ -211,6 +211,31 @@
   text-shadow: 0 0 10px rgba(255, 178, 63, 0.7);
 }
 
+/* Opacity-only variant used under prefers-reduced-motion: same timing and
+   hold as the pop, minus the scale movement. */
+@keyframes hud-kill-banner-fade {
+  0% {
+    opacity: 0;
+  }
+  15%, 75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-kill-banner--show {
+    animation-name: hud-kill-banner-fade;
+  }
+
+  .hud-kill-banner--show,
+  .hud-kill-banner {
+    transform: translate(-50%, -50%);
+  }
+}
+
 @keyframes hud-kill-banner-pop {
   0% {
     opacity: 0;

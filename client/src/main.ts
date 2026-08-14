@@ -19,20 +19,19 @@ const SERVER_URL =
   !location.port || location.port === '5173'
     ? `${WS_PROTOCOL}://${location.hostname}:8080`
     : `${WS_PROTOCOL}://${location.host}`
-// Server snapshots at 20Hz -- log once a second instead of flooding the console.
-const SNAPSHOT_LOG_INTERVAL = 20
-
 // Dev-only manual audio smoke test for Task 16's browser pass: run
 // window.__riftlaneAudioTest() in the console to hear every synthesized
-// sound once, back to back.
+// sound once, back to back. Gated out of production builds.
 declare global {
   interface Window {
     __riftlaneAudioTest?: () => void
   }
 }
-window.__riftlaneAudioTest = () => {
-  audioEngine.init()
-  ALL_SOUND_NAMES.forEach((name, i) => setTimeout(() => audioEngine.play(name), i * 500))
+if (import.meta.env.DEV) {
+  window.__riftlaneAudioTest = () => {
+    audioEngine.init()
+    ALL_SOUND_NAMES.forEach((name, i) => setTimeout(() => audioEngine.play(name), i * 500))
+  }
 }
 
 // AudioContext must start inside a user-gesture handler -- this fires on
@@ -128,15 +127,11 @@ net.onMsg((msg: ServerMsg) => {
         snapshotCount: 0,
       })
       game.start(msg)
-      console.log('[riftlane] match_start', msg)
       break
-    case 'snapshot': {
-      const count = store.state.snapshotCount + 1
-      store.set({ snapshotCount: count })
+    case 'snapshot':
+      store.set({ snapshotCount: store.state.snapshotCount + 1 })
       game.onSnapshot(msg)
-      if (count % SNAPSHOT_LOG_INTERVAL === 0) console.log(`[riftlane] snapshots received: ${count}`)
       break
-    }
     case 'match_end':
       store.set({
         phase: 'ended',

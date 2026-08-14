@@ -60,6 +60,10 @@ function render(app: HTMLElement, state: ClientState, send: Send): void {
 
 function renderStatusBar(state: ClientState): HTMLElement {
   const bar = el('div', 'status-bar')
+  // Connection changes and server errors are announced to screen readers
+  // without stealing focus.
+  bar.setAttribute('role', 'status')
+  bar.setAttribute('aria-live', 'polite')
 
   const dot = el('span', `status-dot status-dot--${state.connectionStatus}`)
   const label = el(
@@ -90,11 +94,14 @@ function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
   const card = el('div', 'card')
 
   card.appendChild(el('h1', 'title', 'RIFTLANE'))
-  card.appendChild(el('p', 'subtitle', 'arena FPS — capture the flag'))
+  card.appendChild(el('p', 'subtitle', 'arena FPS · capture the flag'))
 
   const nameRow = el('div', 'field')
-  nameRow.appendChild(el('label', 'field-label', 'CALLSIGN'))
+  const nameLabel = el('label', 'field-label', 'Callsign')
+  nameLabel.htmlFor = 'callsign-input'
+  nameRow.appendChild(nameLabel)
   const nameInput = el('input', 'text-input')
+  nameInput.id = 'callsign-input'
   nameInput.type = 'text'
   nameInput.maxLength = 16
   nameInput.placeholder = 'Player'
@@ -122,6 +129,7 @@ function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
   codeInput.type = 'text'
   codeInput.maxLength = 4
   codeInput.placeholder = 'CODE'
+  codeInput.setAttribute('aria-label', 'Room code')
   const joinBtn = el('button', 'btn', 'Join Room')
   const doJoin = (): void => {
     const code = codeInput.value.trim().toUpperCase()
@@ -147,8 +155,11 @@ function renderSettingsPanel(state: ClientState): HTMLElement {
 
   const sensRow = el('div', 'field field--slider')
   const sensValue = el('span', 'field-value', state.settings.sensitivity.toFixed(4))
-  sensRow.appendChild(el('label', 'field-label', 'Mouse sensitivity'))
+  const sensLabel = el('label', 'field-label', 'Mouse sensitivity')
+  sensLabel.htmlFor = 'sensitivity-input'
+  sensRow.appendChild(sensLabel)
   const sensInput = el('input', 'range-input')
+  sensInput.id = 'sensitivity-input'
   sensInput.type = 'range'
   sensInput.min = '0.0005'
   sensInput.max = '0.006'
@@ -167,8 +178,11 @@ function renderSettingsPanel(state: ClientState): HTMLElement {
 
   const volRow = el('div', 'field field--slider')
   const volValue = el('span', 'field-value', `${Math.round(state.settings.volume * 100)}%`)
-  volRow.appendChild(el('label', 'field-label', 'Volume'))
+  const volLabel = el('label', 'field-label', 'Volume')
+  volLabel.htmlFor = 'volume-input'
+  volRow.appendChild(volLabel)
   const volInput = el('input', 'range-input')
+  volInput.id = 'volume-input'
   volInput.type = 'range'
   volInput.min = '0'
   volInput.max = '1'
@@ -311,7 +325,7 @@ function renderEndedScreen(state: ClientState, send: Send): HTMLElement {
   card.appendChild(winnerHeading)
 
   if (result) {
-    card.appendChild(el('p', 'subtitle', `${result.scores[0]} — ${result.scores[1]}`))
+    card.appendChild(el('p', 'subtitle', `${result.scores[0]} – ${result.scores[1]}`))
     card.appendChild(renderScoreboard(result.board))
   }
 

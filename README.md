@@ -66,3 +66,9 @@ server/   authoritative match host, lobby/rooms, bots, WebSocket + HTTP server
 client/   Vite + Three.js renderer, input, prediction/interpolation, HUD, audio
 docs/     architecture decisions and design spec
 ```
+
+`PRODUCT.md` and `DESIGN.md` at the root capture the product register and the UI visual system (tokens, components, motion) for design tooling and future UI work.
+
+## License
+
+[MIT](LICENSE)

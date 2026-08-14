@@ -186,7 +186,7 @@ export class Hud {
     const scorestrip = el('div', 'hud-scorestrip')
     this.scoreCobalt = el('span', 'hud-score-cobalt')
     const dash = el('span')
-    dash.textContent = '—'
+    dash.textContent = '–'
     this.scoreEmber = el('span', 'hud-score-ember')
     this.timer = el('span', 'hud-timer')
     scorestrip.append(this.scoreCobalt, dash, this.scoreEmber, this.timer)
@@ -480,7 +480,7 @@ export class Hud {
     this.magChip.chip.classList.toggle('hud-chip--empty', local.grenades.mag <= 0)
 
     const eq = local.equipment
-    this.equipGlyph.textContent = eq ? EQUIP_GLYPH[eq] : '—'
+    this.equipGlyph.textContent = eq ? EQUIP_GLYPH[eq] : '–'
     this.equipCount.textContent = eq ? String(local.equipmentCharges) : ''
     this.equipChip.classList.toggle('hud-chip--empty', !eq)
   }
