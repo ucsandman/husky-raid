@@ -1,0 +1,175 @@
+import type { WeaponId, EquipmentId } from './types'
+
+/**
+ * pellets doubles as "shots fired per trigger pull": 1 for normal hitscan/
+ * projectile weapons, 8 for scattergun's pellet spread, 3 for triad_rifle's
+ * burst count. This reuses one field instead of adding a burst-only one.
+ *
+ * headshotMult only matters to raycast-driven hitscan/burst weapons (the
+ * only kinds where combat.ts distinguishes body vs head hit); projectile/
+ * charge/power_melee weapons deal flat damage on contact, so their
+ * headshotMult is set to 1 (unused, kept for interface completeness).
+ */
+export interface WeaponDef {
+  name: string
+  kind: 'hitscan' | 'burst' | 'projectile' | 'charge' | 'power_melee'
+  damage: number
+  headshotMult: number
+  rof: number
+  magSize: number
+  pellets: number
+  spread: number
+  projectileSpeed?: number
+  splashRadius?: number
+  homing?: boolean
+  lungeRange?: number
+  aoeRadius?: number
+}
+
+export const WEAPONS: Record<WeaponId, WeaponDef> = {
+  pulse_smg: {
+    name: 'Pulse SMG',
+    kind: 'hitscan',
+    damage: 8,
+    headshotMult: 2,
+    rof: 10,
+    magSize: 30,
+    pellets: 1,
+    spread: 0.06,
+  },
+  triad_rifle: {
+    name: 'Triad Rifle',
+    kind: 'burst',
+    damage: 12,
+    headshotMult: 2,
+    rof: 1.5,
+    magSize: 24,
+    pellets: 3,
+    spread: 0.02,
+  },
+  railspike: {
+    name: 'Railspike',
+    kind: 'hitscan',
+    damage: 100,
+    headshotMult: 2,
+    rof: 0.75,
+    magSize: 5,
+    pellets: 1,
+    spread: 0.004,
+  },
+  boomtube: {
+    name: 'Boomtube',
+    kind: 'projectile',
+    damage: 120,
+    headshotMult: 1,
+    rof: 0.6,
+    magSize: 2,
+    pellets: 1,
+    spread: 0,
+    projectileSpeed: 25,
+    splashRadius: 3,
+  },
+  scattergun: {
+    name: 'Scattergun',
+    kind: 'hitscan',
+    damage: 12,
+    headshotMult: 2,
+    rof: 1.2,
+    magSize: 6,
+    pellets: 8,
+    spread: 0.18,
+  },
+  sidearm: {
+    name: 'Sidearm',
+    kind: 'hitscan',
+    damage: 15,
+    headshotMult: 2,
+    rof: 4,
+    magSize: 12,
+    pellets: 1,
+    spread: 0.01,
+  },
+  swarm_pod: {
+    name: 'Swarm Pod',
+    kind: 'projectile',
+    damage: 7,
+    headshotMult: 1,
+    rof: 8,
+    magSize: 12,
+    pellets: 1,
+    spread: 0.05,
+    projectileSpeed: 20,
+    homing: true,
+  },
+  ion_charger: {
+    name: 'Ion Charger',
+    kind: 'charge',
+    damage: 10,
+    headshotMult: 1,
+    rof: 2,
+    magSize: 5,
+    pellets: 1,
+    spread: 0,
+    projectileSpeed: 18,
+    homing: true,
+  },
+  arc_blade: {
+    name: 'Arc Blade',
+    kind: 'power_melee',
+    damage: 999,
+    headshotMult: 1,
+    rof: 1,
+    magSize: 1,
+    pellets: 1,
+    spread: 0,
+    lungeRange: 5,
+  },
+  grav_maul: {
+    name: 'Grav Maul',
+    kind: 'power_melee',
+    damage: 999,
+    headshotMult: 1,
+    rof: 0.7,
+    magSize: 1,
+    pellets: 1,
+    spread: 0,
+    aoeRadius: 4,
+  },
+}
+
+export const WEAPON_POOL: WeaponId[] = [
+  'pulse_smg',
+  'triad_rifle',
+  'railspike',
+  'boomtube',
+  'scattergun',
+  'sidearm',
+  'swarm_pod',
+  'ion_charger',
+  'arc_blade',
+  'grav_maul',
+]
+
+const GRENADE_SPLITS: { frag: number; mag: number }[] = [
+  { frag: 2, mag: 0 },
+  { frag: 1, mag: 1 },
+  { frag: 0, mag: 2 },
+]
+
+const EQUIPMENT_OPTIONS: (EquipmentId | null)[] = ['grapple', 'repulsor', 'camo', null]
+
+export function rollLoadout(rand: () => number): {
+  weapons: [WeaponId, WeaponId]
+  grenades: { frag: number; mag: number }
+  equipment: EquipmentId | null
+} {
+  const first = Math.floor(rand() * WEAPON_POOL.length)
+  let second = Math.floor(rand() * (WEAPON_POOL.length - 1))
+  if (second >= first) second += 1
+  const weapons: [WeaponId, WeaponId] = [WEAPON_POOL[first], WEAPON_POOL[second]]
+
+  const grenades = GRENADE_SPLITS[Math.floor(rand() * GRENADE_SPLITS.length)]
+  const equipment = EQUIPMENT_OPTIONS[Math.floor(rand() * EQUIPMENT_OPTIONS.length)]
+
+  return { weapons, grenades: { ...grenades }, equipment }
+}
