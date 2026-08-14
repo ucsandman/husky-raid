@@ -8,6 +8,7 @@ import { EffectsSystem } from './render/effects'
 import { disposeObject3D } from './render/dispose'
 import type { InputManager } from './input'
 import type { Net } from './net'
+import { ClientPrediction } from './predict'
 
 type MatchStartMsg = Extract<ServerMsg, { t: 'match_start' }>
 type SnapshotMsg = Extract<ServerMsg, { t: 'snapshot' }>
@@ -31,7 +32,7 @@ const MAX_DT = 0.1
 export class Game {
   private raf = 0
   private lastTime = 0
-  private seq = 0
+  private readonly prediction = new ClientPrediction()
   private sceneCtx: SceneCtx | null = null
   private mapGroup: THREE.Group | null = null
   private effects: EffectsSystem | null = null
@@ -57,6 +58,8 @@ export class Game {
     const map = MAPS[msg.mapName]
     if (!map) throw new Error(`unknown map: ${msg.mapName}`)
     this.localId = msg.yourId
+    this.prediction.start(msg.yourId)
+    this.prediction.setMap(map)
 
     const sceneCtx = createScene(this.canvas)
     this.sceneCtx = sceneCtx
@@ -75,7 +78,6 @@ export class Game {
     this.viewmodelRig.position.set(VIEWMODEL_REST.x, VIEWMODEL_REST.y, VIEWMODEL_REST.z)
     sceneCtx.camera.add(this.viewmodelRig)
 
-    this.seq = 0
     this.bobPhase = 0
     this.kickT = 1
     this.lastTime = performance.now()
@@ -84,6 +86,7 @@ export class Game {
 
   onSnapshot(msg: SnapshotMsg): void {
     this.latestSnapshot = msg
+    this.prediction.onSnapshot(msg)
   }
 
   private readonly loop = (now: number): void => {
@@ -98,20 +101,25 @@ export class Game {
     const effects = this.effects
     if (!ctx || !effects || !this.mapGroup) return
 
-    const inp = this.input.sample(this.seq++, dt)
-    this.net.send({ t: 'input', input: inp })
+    // sample(0, 0): InputManager.sample's (seq, dt) args are only echoed
+    // into its return value, never used for its own logic -- the
+    // accumulator overrides both with the fixed-TICK_DT seq/dt it assigns
+    // each emitted input, so the dummy args here are inert.
+    const inputs = this.prediction.stepAndCollectInputs(dt, () => this.input.sample(0, 0))
+    for (const inp of inputs) this.net.send({ t: 'input', input: inp })
+    this.prediction.tick(dt)
 
     const snap = this.latestSnapshot
     if (snap) {
       const localSnap = snap.players.find((p) => p.id === this.localId)
-      const pose = this.localPose(localSnap)
+      const pose = this.localPose()
       if (pose) {
         ctx.camera.position.set(pose.pos.x, pose.pos.y + EYE_HEIGHT, pose.pos.z)
         ctx.camera.rotation.x = pose.pitch
         ctx.camera.rotation.y = pose.yaw + Math.PI
       }
 
-      for (const remote of this.remotePoses(snap.players)) {
+      for (const remote of this.remotePoses()) {
         const group = this.soldiers.get(remote.id)
         if (group) updateSoldier(group, remote)
       }
@@ -149,15 +157,15 @@ export class Game {
     ctx.renderer.render(ctx.scene, ctx.camera)
   }
 
-  // ---- render seam (Task 13 replaces both with prediction/interpolation) ----
+  // ---- render seam: local camera comes from Predictor (+ smoothed
+  // reconcile correction), remote soldiers from Interpolator. ----
 
-  private localPose(snap: SnapPlayer | undefined): { pos: Vec3; yaw: number; pitch: number } | null {
-    if (!snap) return null
-    return { pos: snap.pos, yaw: snap.yaw, pitch: snap.pitch }
+  private localPose(): { pos: Vec3; yaw: number; pitch: number } | null {
+    return this.prediction.localPose()
   }
 
-  private remotePoses(players: SnapPlayer[]): SnapPlayer[] {
-    return players.filter((p) => p.id !== this.localId)
+  private remotePoses(): SnapPlayer[] {
+    return this.prediction.remotePoses()
   }
 
   // ---- viewmodel --------------------------------------------------------------
