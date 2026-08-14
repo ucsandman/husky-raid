@@ -7,6 +7,7 @@ RIFTLANE is a browser-based 8-player capture-the-flag arena shooter, built as an
 | Input | Action |
 | --- | --- |
 | `W A S D` | Move |
+| Right click | Aim down sights (zoom, tighter spread, slower move) |
 | `Shift` | Sprint (forward, cancels while firing) |
 | `Ctrl` | Slide (at speed; jump out of it to keep momentum) |
 | Mouse | Look |
@@ -86,7 +87,10 @@ RIFTLANE is an npm-workspaces monorepo: `shared` holds the deterministic simulat
 ```bash
 npm test          # unit + integration tests (vitest)
 npm run typecheck # tsc project references across all three workspaces
+npm run playtest  # real browser, real match: are the controls actually alive?
 ```
+
+`npm run playtest` needs the server already running (`npm run start`, or set `RIFTLANE_URL`) and Playwright's Chromium (`npx playwright install chromium`). It joins a real match and checks the things unit tests structurally cannot see: that keys and mouse buttons reach the server, that holding fire consumes ammo, that right click scopes in, that losing pointer lock shows a resume prompt instead of silently killing every input, and that the keyboard still works once lock is gone. Every one of those was broken at some point while the unit suite was fully green.
 
 The integration suite (`server/test/integration.test.ts`) boots a real server on an ephemeral port and drives it with real WebSocket clients, proving the snapshot stream, input ack, mid-match disconnect/bot-swap, and clean shutdown all work over real sockets. It doesn't exercise captures or the rest of match logic -- that's covered by the sim unit tests plus manual playtest.
 

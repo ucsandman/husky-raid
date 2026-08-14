@@ -95,6 +95,7 @@ export class Hud {
   private readonly root: HTMLDivElement
   private readonly crosshair: HTMLDivElement
   private readonly hitmarker: HTMLDivElement
+  private readonly scopeOverlay: HTMLDivElement
   private readonly killBanner: HTMLDivElement
   private readonly killBannerTitle: HTMLDivElement
   private readonly killBannerStreak: HTMLDivElement
@@ -118,6 +119,7 @@ export class Hud {
   private readonly enemyFlagBanner: HTMLDivElement
   private readonly respawnOverlay: HTMLDivElement
   private readonly respawnCount: HTMLDivElement
+  private readonly inputPausedOverlay: HTMLDivElement
   private readonly scoreboard: HTMLDivElement
   private readonly scoreboardCobaltBody: HTMLTableSectionElement
   private readonly scoreboardEmberBody: HTMLTableSectionElement
@@ -152,7 +154,8 @@ export class Hud {
 
     this.crosshair = this.buildCrosshair()
     this.hitmarker = el('div', 'hud-hitmarker')
-    this.root.append(this.crosshair, this.hitmarker)
+    this.scopeOverlay = this.buildScope()
+    this.root.append(this.crosshair, this.hitmarker, this.scopeOverlay)
 
     const vitals = el('div', 'hud-vitals')
     const shieldTrack = el('div', 'hud-shield-track')
@@ -206,6 +209,14 @@ export class Hud {
     this.respawnCount = el('div', 'hud-respawn-count')
     this.respawnOverlay.append(respawnTitle, this.respawnCount)
     this.root.appendChild(this.respawnOverlay)
+
+    this.inputPausedOverlay = el('div', 'hud-input-paused')
+    const pausedTitle = el('div', 'hud-input-paused-title')
+    pausedTitle.textContent = 'CLICK TO RESUME'
+    const pausedHint = el('div', 'hud-input-paused-hint')
+    pausedHint.textContent = 'Mouse look and match input are paused'
+    this.inputPausedOverlay.append(pausedTitle, pausedHint)
+    this.root.appendChild(this.inputPausedOverlay)
 
     this.scoreboard = el('div', 'hud-scoreboard')
     const cobaltCol = this.buildScoreboardTeam(0)
@@ -274,11 +285,43 @@ export class Hud {
     this.crosshair.classList.toggle('hud-crosshair--target', active)
   }
 
+  /** Toggled by the game every frame from InputManager.isLocked() (or on a
+   * pointerlockchange callback) to show a centered "click to resume"
+   * overlay whenever mouse/keyboard input is paused mid-match -- lock lost
+   * to Escape, alt-tab, or window blur all land here. This is the fix for a
+   * failure mode this project already shipped once: input silently dying
+   * with nothing on screen to explain why (docs/ERRORS.md, 2026-08-14).
+   * The overlay is a child of `root`, which is pointer-events:none end to
+   * end -- it must stay that way, or it eats the very click that would
+   * re-acquire lock and recover from this state. */
+  setInputPaused(paused: boolean): void {
+    this.inputPausedOverlay.classList.toggle('hud-input-paused--show', paused)
+  }
+
+  /** CSS-only aim-down-sights vignette + reticle. The caller (whoever drives
+   * the camera zoom off InputManager's `ads` sample) just toggles this each
+   * frame; it also hides the regular crosshair so scoping doesn't leave two
+   * reticles on screen at once. Visual only -- no camera/FOV logic here. */
+  setScoped(active: boolean): void {
+    this.scopeOverlay.classList.toggle('hud-scope--show', active)
+    this.crosshair.classList.toggle('hud-crosshair--hidden', active)
+  }
+
   private buildCrosshair(): HTMLDivElement {
     const wrap = el('div', 'hud-crosshair')
     for (const dir of ['n', 's', 'w', 'e'] as const) {
       wrap.appendChild(el('div', `hud-crosshair-line hud-crosshair-line--${dir}`))
     }
+    return wrap
+  }
+
+  private buildScope(): HTMLDivElement {
+    const wrap = el('div', 'hud-scope')
+    const reticle = el('div', 'hud-scope-reticle')
+    for (const dir of ['n', 's', 'w', 'e'] as const) {
+      reticle.appendChild(el('div', `hud-scope-reticle-line hud-scope-reticle-line--${dir}`))
+    }
+    wrap.appendChild(reticle)
     return wrap
   }
 

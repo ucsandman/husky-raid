@@ -337,5 +337,6 @@ function sanitizeInput(input: PlayerInput): PlayerInput {
     swap: !!input.swap,
     sprint: !!input.sprint,
     slideRequest: !!input.slideRequest,
+    ads: !!input.ads,
   }
 }

@@ -69,6 +69,15 @@ export class Predictor {
     state.slideCooldownRemaining = 0
     state.coyoteTimeRemaining = 0
     state.jumpBufferRemaining = 0
+    // Same reasoning again: SnapPlayer carries no `scoped`, and (unlike the
+    // fields above) nothing here was resetting it -- an unowned gap flagged
+    // by the ADS task. stepMovement recomputes it fresh from input.ads on
+    // the very first replayed input below, same as sprinting, so this only
+    // matters when `pending` is empty after the ack-splice (every input
+    // already acked): without this reset, `scoped` would keep whatever
+    // stale value survived from before reconcile ran, until the next local
+    // input tick corrects it.
+    state.scoped = false
 
     let keepFrom = this.pending.length
     for (let i = 0; i < this.pending.length; i++) {

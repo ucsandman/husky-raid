@@ -11,6 +11,7 @@ import {
 } from '../src/constants'
 import { makeTestPlayer, makeInput } from './helpers'
 import type { PlayerState } from '../src/types'
+import type { GameMap } from '../src/map'
 
 // Forward convention: yaw=0 -> +z. Matches gutter's team-0 spawn, which
 // faces +z toward the enemy base at z=+26 (spawnYaw[0] === 0).
@@ -29,6 +30,79 @@ describe('stepMovement', () => {
     expect(Math.abs(distance)).toBeGreaterThan(0)
     expect(Math.abs(Math.abs(distance) - expected)).toBeLessThan(expected * 0.15)
     expect(p.grounded).toBe(true)
+  })
+
+  it('turns into a true diagonal when a strafe key is added mid-run', () => {
+    // Regression for "you can't move up and left at the same time". Friction
+    // used to run only on ticks with NO movement key held, and accelerate()
+    // only ever adds speed along wishDir -- so nothing bled off the velocity
+    // component orthogonal to it. A player already running forward who then
+    // pressed strafe deflected ~10 degrees instead of 45, forever. Run on a
+    // bare flat map so map geometry can't mask the movement model.
+    const flat: GameMap = {
+      name: 'flat',
+      boxes: [{ min: { x: -60, y: -1, z: -60 }, max: { x: 60, y: 0, z: 60 } }],
+      boxColors: [0x777777],
+      launchPads: [],
+      teleporters: [],
+      spawns: [[], []],
+      spawnYaw: [0, Math.PI],
+      flagStands: [
+        { x: 0, y: 0, z: -10 },
+        { x: 0, y: 0, z: 10 },
+      ],
+      deathY: -30,
+      waypoints: [],
+      edges: [],
+    }
+    // Both diagonals, measured in the player's own frame: forward is
+    // (sin yaw, cos yaw) and right is (-cos yaw, sin yaw), so a settled
+    // W+A run sits at -45 degrees and W+D at +45, both at walk speed.
+    for (const [label, strafe, expected] of [
+      ['W+A', -1, -45],
+      ['W+D', 1, 45],
+    ] as const) {
+      const p = makeTestPlayer({ pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 } })
+      for (let i = 0; i < 30; i++) {
+        stepMovement(p, makeInput({ yaw: 0, forward: 1 }), flat, TICK_DT)
+      }
+      for (let i = 0; i < 30; i++) {
+        stepMovement(p, makeInput({ yaw: 0, forward: 1, strafe }), flat, TICK_DT)
+      }
+      const fwd = { x: Math.sin(p.yaw), z: Math.cos(p.yaw) }
+      const rgt = { x: -Math.cos(p.yaw), z: Math.sin(p.yaw) }
+      const alongForward = p.vel.x * fwd.x + p.vel.z * fwd.z
+      const alongRight = p.vel.x * rgt.x + p.vel.z * rgt.z
+      const headingDeg = (Math.atan2(alongRight, alongForward) * 180) / Math.PI
+      expect(Math.abs(headingDeg - expected), `${label} heading ${headingDeg.toFixed(1)}deg`).toBeLessThan(5)
+      const speed = Math.hypot(p.vel.x, p.vel.z)
+      expect(Math.abs(speed - MOVE_SPEED), `${label} speed ${speed.toFixed(2)}`).toBeLessThan(MOVE_SPEED * 0.1)
+    }
+  })
+
+  it('no direction of travel walks a player off either map to their death', () => {
+    // The user's complaint, encoded: "get rid of the open floors where you
+    // can fall down". Runs a player out of several start points in 16
+    // directions, holding forward long enough to cross the whole arena
+    // (300 ticks ~ 10s ~ 80m against a 60m map), including over launch pads
+    // and teleporters. Nothing may ever return 'fell'.
+    for (const mapName of ['gutter', 'hairpin'] as const) {
+      const map = MAPS[mapName]
+      const starts = [map.spawns[0][0], map.spawns[1][0], map.flagStands[0], map.flagStands[1]]
+      for (const start of starts) {
+        for (let dir = 0; dir < 16; dir++) {
+          const yaw = (dir / 16) * Math.PI * 2
+          const p = makeTestPlayer({ pos: { ...start }, vel: { x: 0, y: 0, z: 0 } })
+          for (let i = 0; i < 300; i++) {
+            const result = stepMovement(p, makeInput({ yaw, forward: 1 }), map, TICK_DT)
+            expect(
+              result,
+              `${mapName}: fell after ${i} ticks heading ${((yaw * 180) / Math.PI).toFixed(0)}deg from ${JSON.stringify(start)} at ${JSON.stringify(p.pos)}`
+            ).toBe('ok')
+          }
+        }
+      }
+    }
   })
 
   it('cannot walk through a wall', () => {
@@ -132,7 +206,10 @@ describe('stepMovement', () => {
     expect(zAtApex).toBeLessThanOrEqual(39)
   })
 
-  it('death pit', () => {
+  it('the former gutter gap is now solid floor (a free-falling player lands, not falls through)', () => {
+    // x=-3.5 used to be the gutter's open death-pit gap; it's filled now
+    // (see gutter.ts), so a player free-falling into it should land on it
+    // like any other floor, not drop through to deathY.
     const p = makeTestPlayer({
       pos: { x: -3.5, y: 5, z: 0 },
       vel: { x: 0, y: 0, z: 0 },
@@ -141,8 +218,20 @@ describe('stepMovement', () => {
     let result: 'ok' | 'fell' = 'ok'
     for (let i = 0; i < 200; i++) {
       result = stepMovement(p, makeInput(), MAPS.gutter, TICK_DT)
-      if (result === 'fell') break
+      if (p.grounded) break
     }
+    expect(result).toBe('ok')
+    expect(p.grounded).toBe(true)
+    expect(p.pos.y).toBeCloseTo(0, 5)
+  })
+
+  it('deathY is still a safety net for a player who ends up below the map (not reachable by normal play)', () => {
+    const p = makeTestPlayer({
+      pos: { x: 0, y: MAPS.gutter.deathY - 5, z: 0 },
+      vel: { x: 0, y: 0, z: 0 },
+      grounded: false,
+    })
+    const result = stepMovement(p, makeInput(), MAPS.gutter, TICK_DT)
     expect(result).toBe('fell')
   })
 
@@ -171,9 +260,11 @@ const POST_JUMP_VEL_Y = JUMP_SPEED - PLAYER_GRAVITY * TICK_DT
 
 describe('coyote time + jump buffer', () => {
   // Player "walks off an edge": grounded=true entering the first tick (so
-  // coyote refills), positioned over the gutter's open death pit (no floor
-  // at x=-3.5, same gap as the 'death pit' test) so it free-falls with no
-  // landing to confuse the coyote/buffer math for many ticks after.
+  // coyote refills), then free-falls under gravity with no forward/strafe
+  // input. x=-3.5 used to sit over the gutter's open death pit; that gap is
+  // solid floor now (see gutter.ts), but starting 5m up still gives plenty
+  // of airborne ticks before landing, which is all these tests need -- none
+  // of them run long enough to reach the floor either way.
   function walkOffEdge(): PlayerState {
     return makeTestPlayer({ pos: { x: -3.5, y: 5, z: 0 }, vel: { x: 0, y: 0, z: 0 }, grounded: true })
   }
@@ -271,37 +362,35 @@ describe('sprint + slide', () => {
   })
 })
 
-describe('gutter rail-side curb trim (task 8)', () => {
-  it('a grounded player on the west rail strafing toward -x stops at ~x=-5.3 (outer curb holds)', () => {
+describe('gutter perimeter wall (interior gutters are filled, no more interior curbs)', () => {
+  it('a grounded player on the west rail strafing toward -x stops at ~x=-5.6 (perimeter wall holds)', () => {
     const p = makeTestPlayer({ pos: { x: -5, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 }, grounded: true })
     for (let i = 0; i < 60; i++) {
-      // strafe=1 at yaw=0 moves -x (see the box-14 curb test above).
+      // strafe=1 at yaw=0 moves -x, toward the west perimeter wall (box 13,
+      // near face at x=-6; player radius 0.4 -> stop at x=-5.6).
       stepMovement(p, makeInput({ yaw: 0, strafe: 1 }), MAPS.gutter, TICK_DT)
     }
-    expect(p.pos.x).toBeCloseTo(-5.3, 1)
+    expect(p.pos.x).toBeCloseTo(-5.6, 1)
     expect(p.pos.y).toBe(0)
     expect(p.grounded).toBe(true)
   })
 
-  it('a grounded player on the west rail strafing toward +x walks off into the gutter and falls', () => {
+  it('a grounded player on the west rail strafing toward +x now crosses the former gutter on solid floor', () => {
     const p = makeTestPlayer({ pos: { x: -5, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 }, grounded: true })
     let result: 'ok' | 'fell' = 'ok'
-    // strafe=-1 at yaw=0 moves +x, toward the now-uncurbed gutter gap at
-    // x in (-4,-3) (west rail box3 ends at x=-4, center lane box2 starts
-    // at x=-3 -- nothing fills that gap since task 8 removed the old
-    // rail-facing curb that used to sit at x -4.3..-4). Strafe only long
-    // enough to clear the rail, then release: holding strafe while
-    // airborne would keep aiming wishDir at the lane-edge curb (box 14)
-    // right next to this gap, which is exactly the kind of ledge the
-    // clamber feature (task 4) is supposed to grab -- not what this test
-    // is after.
-    for (let i = 0; i < 10 && result === 'ok'; i++) {
+    // strafe=-1 at yaw=0 moves +x, across the former gutter gap at x in
+    // (-4,-3) -- the exact gap the 'former gutter gap is now solid floor'
+    // test above free-falls straight down through, filled here by crossing
+    // it horizontally instead. Strafe only long enough to clear the rail,
+    // then release and let it settle.
+    for (let i = 0; i < 10; i++) {
       result = stepMovement(p, makeInput({ yaw: 0, strafe: -1 }), MAPS.gutter, TICK_DT)
     }
-    for (let i = 0; i < 200 && result === 'ok'; i++) {
+    for (let i = 0; i < 200; i++) {
       result = stepMovement(p, makeInput({ yaw: 0 }), MAPS.gutter, TICK_DT)
     }
-    expect(result).toBe('fell')
+    expect(result).toBe('ok')
+    expect(p.grounded).toBe(true)
   })
 })
 
@@ -321,20 +410,18 @@ describe('airborne clamber', () => {
     expect(p.pos.y).toBeGreaterThan(0.9)
   })
 
-  it('a grounded player strafing into curb box 14 (top y=0.5) is blocked and never gains height', () => {
-    const curb = MAPS.gutter.boxes[14]
-    expect(curb.max.y).toBe(0.5)
+  it('the west perimeter wall (top y=6) is too tall to clamber, unlike a low cover box', () => {
+    // The old interior lane-edge curbs (0.5m, deliberately jumpable) are
+    // gone now that the gutters are filled -- see gutter.ts. What replaced
+    // them is the perimeter wall (box 13), which is deliberately the
+    // opposite: tall enough that tryClamber's own height gate
+    // (CLAMBER_MAX_HEIGHT above the player) rejects it outright, unlike
+    // the box-9 cover box clambered above.
+    const wall = MAPS.gutter.boxes[13]
+    expect(wall.max.y).toBe(6)
 
-    // z=-10 keeps clear of the launch pads at x=-1/1,z=0 (radius 1) as well
-    // as every cover box, so only the curb interacts with this player.
-    const p = makeTestPlayer({ pos: { x: -2, y: 0, z: -10 }, vel: { x: 0, y: 0, z: 0 }, grounded: true })
-    for (let i = 0; i < 60; i++) {
-      // strafe=1 at yaw=0 moves -x (toward the curb at x [-3,-2.7]).
-      stepMovement(p, makeInput({ yaw: 0, strafe: 1 }), MAPS.gutter, TICK_DT)
-    }
-    const faceX = curb.max.x + PLAYER_RADIUS
-    expect(p.pos.x).toBeGreaterThanOrEqual(faceX - 0.01)
-    expect(p.pos.y).toBe(0)
-    expect(p.grounded).toBe(true)
+    const pos = { x: wall.max.x + CLAMBER_CHECK_DISTANCE, y: 0, z: -10 }
+    const wishDir = { x: -1, y: 0, z: 0 }
+    expect(tryClamber(pos, wishDir, MAPS.gutter.boxes)).toBeNull()
   })
 })

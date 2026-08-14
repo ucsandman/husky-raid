@@ -11,6 +11,7 @@ import {
   PLAYER_RADIUS,
   PLAYER_HEIGHT,
   FLAG_CARRIER_SPEED_MULT,
+  ADS_MOVE_MULT,
   TELEPORT_COOLDOWN,
   TELEPORT_ARRIVAL_OFFSET,
   COYOTE_TIME,
@@ -200,13 +201,25 @@ export function stepMovement(
   p.yaw = input.yaw
   p.pitch = input.pitch
 
+  // ADS task (sim-owning agent, authorized edit -- touched outside this
+  // file's normal ownership, see PR/task notes): p.scoped mirrors exactly
+  // how p.sprinting is stored AND computed -- recomputed every tick
+  // straight from input.ads, right here (before speedMult/wishSpeed/
+  // sprinting below all read it) rather than in sim.ts's tick(),
+  // specifically so shared/src/predict.ts's client-side replay (which calls
+  // this function directly, bypassing MatchSim.tick() entirely) also gets a
+  // correct p.scoped without any wiring changes on its end.
+  p.scoped = input.ads === true
+
   const forwardVec: Vec3 = { x: Math.sin(p.yaw), y: 0, z: Math.cos(p.yaw) }
   // right = forward x up (right-handed world, up = +y): (sinψ,0,cosψ) x (0,1,0)
   // = (0*0 - cosψ*1, cosψ*0 - sinψ*0, sinψ*1 - 0*0) = (-cosψ, 0, sinψ).
   const rightVec: Vec3 = { x: -Math.cos(p.yaw), y: 0, z: Math.sin(p.yaw) }
   const wish = add(scale(forwardVec, input.forward), scale(rightVec, input.strafe))
   const wishDir = normalize(wish)
-  const speedMult = p.carryingFlag !== null ? FLAG_CARRIER_SPEED_MULT : 1
+  // Scoped players move at ADS_MOVE_MULT, same multiplicative slot as the
+  // existing flag-carrier penalty.
+  const speedMult = (p.carryingFlag !== null ? FLAG_CARRIER_SPEED_MULT : 1) * (p.scoped ? ADS_MOVE_MULT : 1)
 
   // Slide: cooldown ticks down every tick; a fresh slide can start once
   // grounded, not already sliding, off cooldown, and moving fast enough.
@@ -224,8 +237,16 @@ export function stepMovement(
     p.vel = { x: p.vel.x * SLIDE_SPEED_MULT, y: p.vel.y, z: p.vel.z * SLIDE_SPEED_MULT }
   }
 
+  // ADS task: sprint must be impossible while scoped (p.scoped is set at
+  // the top of this function) -- added to the existing exclusivity chain
+  // (already excludes sliding/firing) rather than a separate gate.
   p.sprinting =
-    input.sprint === true && p.grounded && !p.sliding && input.forward > SPRINT_MIN_FORWARD && !input.fire
+    input.sprint === true &&
+    p.grounded &&
+    !p.sliding &&
+    !p.scoped &&
+    input.forward > SPRINT_MIN_FORWARD &&
+    !input.fire
   const wishSpeed = MOVE_SPEED * speedMult * (p.sprinting ? SPRINT_SPEED_MULT : 1)
 
   if (p.sliding) {
@@ -246,11 +267,18 @@ export function stepMovement(
       p.slideCooldownRemaining = SLIDE_COOLDOWN
       // Ending via jump must NOT zero vel.x/z here -- a free slide-cancel jump.
     }
-  } else if (length(wishDir) > 0) {
-    const accel = p.grounded ? ACCEL_GROUND : ACCEL_AIR
-    p.vel = accelerate(p.vel, wishDir, wishSpeed, accel, dt)
-  } else if (p.grounded) {
-    p.vel = applyFriction(p.vel, dt)
+  } else {
+    // Friction runs on EVERY grounded tick, before accelerate -- not only on
+    // ticks with no movement key held. accelerate() only ever adds speed
+    // along wishDir, so nothing else bleeds off the velocity component
+    // orthogonal to it: a player already running forward who then adds a
+    // strafe key used to deflect ~10 degrees instead of 45 and never
+    // converge. Quake/Source run friction then acceleration for this reason.
+    if (p.grounded) p.vel = applyFriction(p.vel, dt)
+    if (length(wishDir) > 0) {
+      const accel = p.grounded ? ACCEL_GROUND : ACCEL_AIR
+      p.vel = accelerate(p.vel, wishDir, wishSpeed, accel, dt)
+    }
   }
 
   // Coyote time: grounded refreshes the window; airborne counts it down.

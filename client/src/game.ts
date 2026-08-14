@@ -13,6 +13,7 @@ import type { Net } from './net'
 import { ClientPrediction } from './predict'
 import { Hud } from './ui/hud'
 import { audioEngine, type SoundName } from './audio'
+import { store } from './state'
 
 type MatchStartMsg = Extract<ServerMsg, { t: 'match_start' }>
 type SnapshotMsg = Extract<ServerMsg, { t: 'snapshot' }>
@@ -28,6 +29,8 @@ const MAX_DT = 0.1
 
 const FOV_MAX_BUMP = 6 // degrees, at full MOVE_SPEED
 const FOV_LERP_TAU = 0.15 // seconds
+const ADS_FOV = 55 // degrees vertical, target FOV while fully scoped (base is baseFov, scene.ts's FOV_DEGREES=90)
+const ADS_FOV_TAU = 0.12 // seconds -- snappier than FOV_LERP_TAU so scoping in/out reads as a deliberate press, not the ambient sprint-widen drift
 const FOOTSTEP_MIN_SPEED_FRAC = 0.15 // below this the player reads as standing still, not walking
 const LANDING_RECOVER_RATE = 5 // 1/s, same convention as KICK_RECOVER_RATE above
 const LANDING_DIP_DEPTH = 0.16 // meters, camera Y dip on landing
@@ -86,6 +89,10 @@ function eyePos(pos: Vec3): Vec3 {
   return { x: pos.x, y: pos.y + EYE_HEIGHT, z: pos.z }
 }
 
+function degToRad(deg: number): number {
+  return (deg * Math.PI) / 180
+}
+
 /**
  * Owns the render loop for one match: builds scene/map/soldiers on
  * match_start, then every frame samples input, drives remote soldiers +
@@ -120,11 +127,23 @@ export class Game {
   private recoilPitch = 0 // radians, decays exponentially toward 0
   private baseFov = 90 // matches render/scene.ts's FOV_DEGREES; immediately overwritten in start()
   private fovBump = 0 // additive degrees, lerped from horizontal speed
+  private adsZoomT = 0 // 0 = unscoped, 1 = fully zoomed -- own (snappier) lerp track so ADS zoom never inherits fovBump's slower time constant
   private landingDipT = 1 // 1 = recovered, 0 = just landed
   private prevLookYaw = 0
   private prevLookPitch = 0
   private swayX = 0
   private swayY = 0
+  // ADS sensitivity: input.ts's getSensitivity callback (wired in main.ts,
+  // outside this file's ownership) reads store.state.settings.sensitivity
+  // directly and applies it the instant a mousemove event fires -- there is
+  // no "after the fact" seam to rescale a turn that already happened, so
+  // the store value itself has to already be scaled at read time. See the
+  // scoped block in updateViewmodel() for why mutating it here (never
+  // persisted -- saveSettings() only ever runs from ui/menu.ts's own change
+  // handlers) is the only reachable seam without editing input.ts/main.ts.
+  private adsSensitivityMult = 1 // tan(halfFovScoped)/tan(halfFovBase); computed in start() once baseFov is known
+  private baseSensitivity = store.state.settings.sensitivity // last known un-scoped sensitivity, restored on scope release
+  private wasScoped = false
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -167,6 +186,10 @@ export class Game {
     this.recoilPitch = 0
     this.baseFov = sceneCtx.camera.fov
     this.fovBump = 0
+    this.adsZoomT = 0
+    this.adsSensitivityMult = Math.tan(degToRad(ADS_FOV) / 2) / Math.tan(degToRad(this.baseFov) / 2)
+    this.baseSensitivity = store.state.settings.sensitivity
+    this.wasScoped = false
     this.landingDipT = 1
     const look = this.input.getLookAngles()
     this.prevLookYaw = look.yaw
@@ -381,6 +404,7 @@ export class Game {
     if (snap) {
       const localSnap = snap.players.find((p) => p.id === this.localId)
       const pose = this.localPose()
+      const scoped = this.prediction.isLocalScoped()
       if (pose) {
         ctx.camera.position.set(pose.pos.x, pose.pos.y + EYE_HEIGHT, pose.pos.z)
         ctx.camera.rotation.x = pose.pitch - this.recoilPitch
@@ -418,8 +442,10 @@ export class Game {
           this.localId ?? ''
         )
         this.hud?.setTargetTracked(aimHit.kind === 'player')
+        this.hud?.setScoped(scoped)
       } else {
         this.hud?.setTargetTracked(false)
+        this.hud?.setScoped(false)
       }
 
       effects.syncProjectiles(snap.projectiles)
@@ -459,12 +485,13 @@ export class Game {
             }
           }
         }
-        this.updateViewmodel(localSnap, dt)
+        this.updateViewmodel(localSnap, dt, scoped)
       }
 
       effects.setDeathFade(localSnap ? !localSnap.alive : false, dt)
     }
 
+    this.hud?.setInputPaused(!this.input.isLocked())
     this.hud?.update(dt, snap, this.localId, this.input.scoreboardHeld())
 
     effects.tickMapPulse(this.mapGroup, dt)
@@ -486,7 +513,7 @@ export class Game {
 
   // ---- viewmodel --------------------------------------------------------------
 
-  private updateViewmodel(local: SnapPlayer, dt: number): void {
+  private updateViewmodel(local: SnapPlayer, dt: number, scoped: boolean): void {
     if (!this.sceneCtx || !this.viewmodelRig) return
     const weaponId = local.weapons[local.activeWeapon]
     let mesh = this.viewmodels.get(weaponId)
@@ -519,10 +546,32 @@ export class Game {
     const kick = (1 - this.kickT) * KICK_DEPTH
 
     // FOV widens with horizontal speed -- lerped, not snapped, and capped at
-    // FOV_MAX_BUMP so a full sprint never reads as a lens distortion.
-    this.fovBump = decayTo(this.fovBump, speedFrac * FOV_MAX_BUMP, dt, FOV_LERP_TAU)
-    this.sceneCtx.camera.fov = this.baseFov + this.fovBump
+    // FOV_MAX_BUMP so a full sprint never reads as a lens distortion. ADS
+    // zoom overrides this outright rather than stacking with it: the
+    // bump's own target is suppressed to 0 while scoped so it relaxes back
+    // out, and the visible FOV cross-fades toward ADS_FOV on its own
+    // snappier time constant (ADS_FOV_TAU) so scoping in/out reads as a
+    // deliberate press, not drift shared with the ambient sprint widen.
+    this.fovBump = decayTo(this.fovBump, scoped ? 0 : speedFrac * FOV_MAX_BUMP, dt, FOV_LERP_TAU)
+    this.adsZoomT = decayTo(this.adsZoomT, scoped ? 1 : 0, dt, ADS_FOV_TAU)
+    this.sceneCtx.camera.fov = this.baseFov + this.fovBump + (ADS_FOV - this.baseFov) * this.adsZoomT
     this.sceneCtx.camera.updateProjectionMatrix()
+
+    // ADS sensitivity: scale the same store value input.ts's getSensitivity
+    // callback reads, so mouse-look is actually slower while scoped -- a
+    // fixed ratio for the whole time scoped is held (matching the task's
+    // "while scoped" wording), not tied to the FOV lerp above, so this is
+    // an edge-triggered write (at most twice per ADS press), not a
+    // per-frame one. See the class-level comment on adsSensitivityMult for
+    // why this is the only reachable seam. teardown() covers the case
+    // where the match ends while still scoped, since the release-edge
+    // restore below never gets a final frame to run in that case.
+    if (scoped !== this.wasScoped) {
+      const sensitivity = scoped ? this.baseSensitivity * this.adsSensitivityMult : this.baseSensitivity
+      store.set({ settings: { ...store.state.settings, sensitivity } })
+      this.wasScoped = scoped
+    }
+    if (!scoped) this.baseSensitivity = store.state.settings.sensitivity
 
     // View sway: a small, heavily-damped offset from how fast the player is
     // turning, sourced from InputManager's continuous look angles (not
@@ -586,6 +635,15 @@ export class Game {
     this.hud?.dispose()
     this.hud = null
     audioEngine.dispose()
+
+    // Match can end (or the connection can drop) while still scoped -- the
+    // release-edge restore in updateViewmodel() never gets a final frame to
+    // run in that case, so without this the store is left holding the
+    // ADS-scaled sensitivity for the rest of the session.
+    if (this.wasScoped) {
+      store.set({ settings: { ...store.state.settings, sensitivity: this.baseSensitivity } })
+      this.wasScoped = false
+    }
 
     this.sceneCtx = null
     this.mapGroup = null

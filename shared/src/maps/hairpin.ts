@@ -7,16 +7,24 @@ import type { GameMap } from '../map'
 // A teleporter pair cuts straight across the U's gap at z = -10, well
 // shorter than walking all the way around through the joint. A launch pad
 // and grapple-tagged edges reach a high walkway (y=3) over the joint.
-// Each leg carries guard-rail curbs on both its outer and inner edges --
-// see boxes 11-14 below -- since a 4m plank flanked by void on both sides
-// is otherwise one bad strafe from a death pit.
+// The gap between the two legs (x roughly -8..8, for most of the U's
+// length) used to be open void -- box 3 now fills the whole strip, not just
+// the old pad-approach corner, so the whole U is one continuous floor from
+// leg to leg. A tall perimeter wall (6m -- boxes 11-14) wraps the entire
+// outer edge of that floor: both legs' outsides, the back of each leg, and
+// the joint's far edge past z=39, none of which had any guard before. See
+// gutter.ts for the matching pattern and its full rationale.
 export const hairpin: GameMap = {
   name: 'hairpin',
   boxes: [
     { min: { x: -12, y: -1, z: -30 }, max: { x: -8, y: 0, z: 32 } }, // 0 left leg floor
     { min: { x: 8, y: -1, z: -30 }, max: { x: 12, y: 0, z: 32 } }, // 1 right leg floor
     { min: { x: -12, y: -1, z: 30 }, max: { x: 12, y: 0, z: 39 } }, // 2 joint floor
-    { min: { x: -8, y: -1, z: 26 }, max: { x: 8, y: 0, z: 30 } }, // 3 pad approach floor (bridges legs to joint, x in (-8,8) had no floor)
+    // Fills the entire gap between the two legs (x -8..8), from the south
+    // end all the way up to the joint at z=30 -- was just the pad-approach
+    // corner (z 26..30). This is the fix for the dominant death pit that
+    // used to run almost the whole length of the map.
+    { min: { x: -8, y: -1, z: -30 }, max: { x: 8, y: 0, z: 30 } }, // 3 center fill floor
     { min: { x: -12, y: 0, z: -30 }, max: { x: -8, y: 0.5, z: -22 } }, // 4 cobalt base
     { min: { x: 8, y: 0, z: 22 }, max: { x: 12, y: 0.5, z: 30 } }, // 5 ember base
     { min: { x: -12, y: 2.7, z: 30 }, max: { x: 12, y: 3, z: 39 } }, // 6 high walkway
@@ -24,21 +32,23 @@ export const hairpin: GameMap = {
     { min: { x: -11, y: 0, z: 9.25 }, max: { x: -9, y: 1, z: 10.75 } }, // 8 cover, left leg
     { min: { x: 9, y: 0, z: -5.75 }, max: { x: 11, y: 1, z: -4.25 } }, // 9 cover, right leg
     { min: { x: 9, y: 0, z: 9.25 }, max: { x: 11, y: 1, z: 10.75 } }, // 10 cover, right leg
-    // Guard-rail curbs (0.5m, same rationale as gutter.ts): each leg is a
-    // 4m plank with open void on BOTH sides for most of its length -- the
-    // outside (x <-12 / x >12) and the inside gap between the two legs
-    // (x in (-8,8), open until the pad-approach floor fills it at z>=26).
-    // Curbs sit on the void side so the 4m walkable width is untouched.
-    { min: { x: -12.3, y: 0, z: -30 }, max: { x: -12, y: 0.5, z: 32 } }, // 11 left leg outer curb
-    { min: { x: 12, y: 0, z: -30 }, max: { x: 12.3, y: 0.5, z: 32 } }, // 12 right leg outer curb
-    { min: { x: -8, y: 0, z: -30 }, max: { x: -7.7, y: 0.5, z: 26 } }, // 13 left leg inner curb
-    { min: { x: 7.7, y: 0, z: -30 }, max: { x: 8, y: 0.5, z: 26 } }, // 14 right leg inner curb
+    // Perimeter walls (6m tall, same rationale as gutter.ts's 13-16): the
+    // floor inside is fully solid now, so these only need to guard the true
+    // outer boundary. West/east now run the FULL z length including the
+    // joint (was just the leg length, leaving the joint's west/east edges
+    // and its entire north edge unguarded), plus new south/north caps
+    // closing off the back of each leg and the far side of the joint,
+    // which had no curb at all before, not even the old jumpable kind.
+    { min: { x: -13, y: 0, z: -31 }, max: { x: -12, y: 6, z: 40 } }, // 11 west perimeter wall
+    { min: { x: 12, y: 0, z: -31 }, max: { x: 13, y: 6, z: 40 } }, // 12 east perimeter wall
+    { min: { x: -13, y: 0, z: -31 }, max: { x: 13, y: 6, z: -30 } }, // 13 south perimeter wall
+    { min: { x: -13, y: 0, z: 39 }, max: { x: 13, y: 6, z: 40 } }, // 14 north perimeter wall
   ],
   boxColors: [
     0x777777, // left leg floor
     0x777777, // right leg floor
     0x888888, // joint floor
-    0x888888, // pad approach floor
+    0x888888, // center fill floor
     0x2244aa, // cobalt base
     0xaa5522, // ember base
     0x999999, // high walkway
@@ -46,13 +56,15 @@ export const hairpin: GameMap = {
     0x3355bb,
     0xbb6633, // cover (ember side)
     0xbb6633,
-    0x777777, // guard rail curbs (11-14)
+    0x777777, // perimeter walls (11-14)
     0x777777,
     0x777777,
     0x777777,
   ],
   // Velocity scaled by k = sqrt(PLAYER_GRAVITY / GRAVITY) = sqrt(24/20)
   // ~= 1.0954 from its original (0,12,8), same rationale as gutter's pads.
+  // Lands on the high walkway around z~35.6, comfortably inside the [30,39]
+  // walkway span and nowhere near the z=39 perimeter wall.
   launchPads: [{ pos: { x: 0, y: 0, z: 26 }, radius: 1, velocity: { x: 0, y: 13.145, z: 8.763 } }],
   teleporters: [{ a: { x: -10, y: 0, z: -10 }, b: { x: 10, y: 0, z: -10 }, radius: 1 }],
   spawns: [

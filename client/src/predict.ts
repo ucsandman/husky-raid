@@ -86,6 +86,7 @@ function reconstructPlayerState(snap: SnapPlayer): PlayerState {
     slideCooldownRemaining: 0,
     coyoteTimeRemaining: 0,
     jumpBufferRemaining: 0,
+    scoped: false,
   }
 }
 
@@ -177,6 +178,15 @@ export class ClientPrediction {
       yaw: this.localState.yaw,
       pitch: this.localState.pitch,
     }
+  }
+
+  /** Whether the local player is currently aiming down sights, straight off
+   * the predicted PlayerState -- stepMovement recomputes `scoped` fresh
+   * every tick from input.ads (shared/src/physics.ts), so this is the same
+   * value the server itself uses for spread/speed, not a re-derivation
+   * from raw input. False before the first snapshot arrives. */
+  isLocalScoped(): boolean {
+    return this.localState?.scoped ?? false
   }
 
   /** Interpolated poses for every remote player (local player excluded). */

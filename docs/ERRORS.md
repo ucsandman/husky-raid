@@ -2,6 +2,22 @@
 
 Reusable debugging lessons for RIFTLANE. Newest first, short entries.
 
+## 2026-08-14: Shipped a "Halo feel" pass whose controls were broken in three ways
+
+**Symptom:** Wes playtested the deployed build: "the gun wouldn't shoot", "you can't move up and left at the same time or up and right", "there's no scope", "utter dogshit". 121 unit tests, typecheck and build were all green, and the pass had been declared shipped.
+
+**Root causes (three independent, all invisible to the unit suite):**
+
+1. **Diagonals barely turned.** `stepMovement` ran ground friction only on ticks with *no* movement key held (`else if (p.grounded) applyFriction(...)`), and `accelerate()` only ever adds speed *along* wishDir. Nothing bled off the velocity component orthogonal to it, so a player already running forward who added a strafe key deflected 9.7 degrees instead of 45 and never converged -- while getting 22.5% faster in the same direction. Symmetric for W+A and W+D. Fix: run friction on every grounded tick *before* accelerate, the way Quake/Source do. That in turn exposed `ACCEL_GROUND = 60` being too weak to hold sprint speed against continuous friction (sprint settled at 7.5 instead of 9.1), so it went to 120.
+2. **The first trigger pull of every match was swallowed.** `onMouseDown` was gated on `this.locked`, but pointer lock resolves ~160ms *after* the mousedown that requests it -- so the click that acquires lock could never register as fire. Measured live: 29 inputs sent, 0 with `fire=true`. Fix: track physical button state independent of lock, plus an edge latch so a click shorter than one 30Hz sample still fires.
+3. **Any lock loss silently killed all input, with nothing on screen.** `onKeyDown` early-returned on `!this.locked`, and `isLocked()` had zero callers anywhere in the repo. Alt-tab or Escape and the game kept rendering while ignoring every key, with no overlay, no hint. Fix: keyboard no longer requires lock, held keys clear on lock loss and window blur, and the HUD shows a "CLICK TO RESUME" prompt (pointer-events:none, so it cannot eat the click that recovers).
+
+**Why every check missed it:** the unit suite either started movement from rest (where diagonals *are* correct) or asserted client/server replay parity -- and a wrong movement model replays identically on both sides. Nothing asserted the resulting *heading* of a mid-run direction change, and nothing at all crossed the browser boundary. The prior "verification" was a screenshot of a rendered match, which proves rendering and nothing else.
+
+**Prevention:** `npm run playtest` (`scripts/playtest-smoke.mjs`) now drives a real match in a real browser and asserts keys reach the server, firing consumes ammo, right click scopes, and lock loss is visible. `shared/test/physics.test.ts` pins both diagonal headings at +-45 degrees on a bare flat map, and pins that no direction of travel can walk a player off either map.
+
+**Two self-inflicted process failures in the same session, worth their own line:** (a) I ran a 7-agent workflow where the diagnosis phase found the friction bug but *no implementer owned `physics.ts`* -- the fix prompts were written before the diagnosis existed, so the single most important finding landed nowhere. Assign an owner for "whatever diagnosis finds", or gate implementation on a re-read of the findings. (b) I ran `git checkout shared/src/maps/gutter.ts` to undo a deliberate temporary edit and destroyed an agent's *uncommitted* map work; only a manual backup taken a minute earlier saved it. Never `git checkout` a file that has uncommitted changes you did not make.
+
 ## 2026-08-14: Game rendered perfectly and ignored the keyboard completely
 
 **Symptom:** in a live match the scene rendered, bots fought, the HUD updated, and no key or mouse button did anything. It felt like the keyboard was disconnected.

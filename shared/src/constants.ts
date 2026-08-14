@@ -3,7 +3,13 @@ export const TICK_DT = 1 / 30
 export const SNAPSHOT_RATE = 20
 export const MOVE_SPEED = 7
 export const FLAG_CARRIER_SPEED_MULT = 0.9
-export const ACCEL_GROUND = 60
+// Ground acceleration must out-pull ground friction, which now runs on every
+// grounded tick (see physics.ts): holding a direction settles at wishSpeed
+// only while ACCEL_GROUND*dt >= wishSpeed*FRICTION_GROUND*dt. At the sprint
+// wishSpeed of 9.1 that needs >= 72.8; 60 capped every sprint at 7.5 m/s.
+// 120 sustains sprint with margin and reaches full speed in ~3 ticks (0.1s),
+// which is the snappy ground feel this pass is after.
+export const ACCEL_GROUND = 120
 export const ACCEL_AIR = 20
 export const FRICTION_GROUND = 8
 export const GRAVITY = 20
@@ -51,6 +57,13 @@ export const SLIDE_DURATION = 0.65
 export const SLIDE_FRICTION = 2
 export const SLIDE_MIN_SPEED = 5.5
 export const SLIDE_COOLDOWN = 0.4
+
+// Movement + Combat: aim-down-sights (ADS/scope, input.ads). Tightens
+// hitscan/burst pellet spread and slows ground movement while held; sprint
+// is disabled outright while scoped (see stepMovement's sprint gate).
+// Power-melee weapons are unaffected (no spread to tighten).
+export const ADS_SPREAD_MULT = 0.35
+export const ADS_MOVE_MULT = 0.75
 
 // Movement: airborne ledge clamber (auto-mantle onto a ledge in front of
 // the player while jumping/falling into it -- grounded strafes into the

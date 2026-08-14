@@ -12,6 +12,10 @@ import {
   PLAYER_BODY_CENTER_Y,
   PLAYER_BODY_RADIUS,
   PLAYER_HEAD_RADIUS,
+  MOVE_SPEED,
+  EYE_HEIGHT,
+  ADS_SPREAD_MULT,
+  ADS_MOVE_MULT,
 } from '../src/constants'
 import { WEAPONS, WEAPON_POOL, STARTER_WEAPON, rollLoadout } from '../src/weapons'
 import {
@@ -23,7 +27,8 @@ import {
   checkSwarmPop,
   type Projectile,
 } from '../src/combat'
-import { makeTestPlayer } from './helpers'
+import { MatchSim } from '../src/sim'
+import { makeTestPlayer, makeInput } from './helpers'
 
 function seqRand(values: number[]): () => number {
   let i = 0
@@ -292,5 +297,134 @@ describe('frag grenade', () => {
 
     const late = stepProjectile(frag, [], [], TICK_DT, FRAG_FUSE)
     expect(late.exploded).toBe(true)
+  })
+})
+
+describe('ADS (aim-down-sights): shot spread', () => {
+  it('narrows hitscan/burst spread to exactly ADS_SPREAD_MULT while scoped, via a calibrated hit gate', () => {
+    // Geometry: the target's body-sphere center is placed EXACTLY on the
+    // shooter's unjittered boresight at range R (eye height cancels
+    // PLAYER_BODY_CENTER_Y exactly -- see y below), so a pellet's deviation
+    // angle theta off boresight determines hit/miss via the exact
+    // closest-approach test raySphere itself runs: R*sin(theta) <=
+    // PLAYER_BODY_RADIUS. R is chosen so the resulting gate angle sits
+    // strictly between scattergun's scoped-max deviation
+    // (spread*ADS_SPREAD_MULT) and its unscoped-max (spread): every scoped
+    // pellet is then GUARANTEED to land, for ANY seed, because jitterDir's
+    // angle = rand()*spread is always < spread. Unscoped pellets are not
+    // bounded by the gate, so misses appear. Empirically confirmed against
+    // the real sim before writing this assertion (5 seeds, 32 pellets each:
+    // scoped 32/32 every time, unscoped 16-25/32).
+    const weapon = WEAPONS.scattergun // pellets: 8, spread: 0.18
+    const R = 5.8
+    const gate = Math.asin(PLAYER_BODY_RADIUS / R)
+    expect(weapon.spread * ADS_SPREAD_MULT).toBeLessThan(gate)
+    expect(gate).toBeLessThan(weapon.spread)
+
+    function fire(scoped: boolean, seed: number, shots: number): { hits: number; total: number } {
+      const sim = new MatchSim('gutter', seed)
+      const a = sim.addPlayer('a', 'A', 0, false)
+      const b = sim.addPlayer('b', 'B', 1, false)
+      a.pos = { x: 0, y: 0, z: -20 }
+      a.yaw = 0
+      a.pitch = 0
+      a.weapons = ['scattergun', 'scattergun']
+      a.activeWeapon = 0
+      // bodyCenter(b.pos).y === eye.y exactly -- see geometry note above.
+      b.pos = { x: 0, y: EYE_HEIGHT - PLAYER_BODY_CENTER_Y, z: -20 + R }
+
+      let hits = 0
+      let now = 0
+      for (let shot = 0; shot < shots; shot++) {
+        now += TICK_DT
+        a.cooldownUntil = 0
+        a.ammo = [weapon.magSize, weapon.magSize]
+        b.shield = MAX_SHIELD
+        b.health = MAX_HEALTH
+        b.alive = true
+        const before = b.shield + b.health
+        sim.setInput('a', makeInput({ yaw: 0, pitch: 0, fire: true, ads: scoped }))
+        sim.tick(now)
+        const dealt = before - (b.shield + b.health)
+        hits += Math.round(dealt / weapon.damage)
+      }
+      return { hits, total: shots * weapon.pellets }
+    }
+
+    const scopedResult = fire(true, 4242, 4)
+    const unscopedResult = fire(false, 4242, 4)
+
+    expect(scopedResult.hits).toBe(scopedResult.total) // every pellet lands, guaranteed
+    expect(unscopedResult.hits).toBeLessThan(unscopedResult.total) // spread lets some miss
+  })
+})
+
+describe('ADS (aim-down-sights): movement', () => {
+  it('slows ground movement to exactly ADS_MOVE_MULT while scoped, and makes sprint impossible', () => {
+    const sim = new MatchSim('gutter', 501)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    a.pos = { x: 0, y: 0, z: -20 } // known-clear ground, matches other sim tests on 'gutter'
+    a.yaw = 0
+
+    let now = 0
+    for (let i = 0; i < 60; i++) {
+      now += TICK_DT
+      sim.setInput('a', makeInput({ yaw: 0, forward: 1, ads: true }))
+      sim.tick(now)
+    }
+    expect(Math.hypot(a.vel.x, a.vel.z)).toBeCloseTo(MOVE_SPEED * ADS_MOVE_MULT, 1)
+
+    // Sprint must be impossible while scoped: holding sprint on top of ADS
+    // neither flips p.sprinting true nor speeds the player past the
+    // ADS-slowed pace.
+    for (let i = 0; i < 30; i++) {
+      now += TICK_DT
+      sim.setInput('a', makeInput({ yaw: 0, forward: 1, ads: true, sprint: true }))
+      sim.tick(now)
+    }
+    expect(a.sprinting).toBe(false)
+    expect(Math.hypot(a.vel.x, a.vel.z)).toBeCloseTo(MOVE_SPEED * ADS_MOVE_MULT, 1)
+  })
+
+  it('sanity baseline: unscoped ground speed is unaffected (regression guard for the test above)', () => {
+    const sim = new MatchSim('gutter', 502)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    a.pos = { x: 0, y: 0, z: -20 }
+    a.yaw = 0
+
+    let now = 0
+    for (let i = 0; i < 60; i++) {
+      now += TICK_DT
+      sim.setInput('a', makeInput({ yaw: 0, forward: 1 }))
+      sim.tick(now)
+    }
+    expect(Math.hypot(a.vel.x, a.vel.z)).toBeCloseTo(MOVE_SPEED, 1)
+  })
+})
+
+describe('ADS task: sim-side fire bug found in diagnosis', () => {
+  it('power-melee weapons (arc_blade/grav_maul) now emit a shot event on fire, not just damage', () => {
+    // Diagnosis-confirmed bug: stepFire's power_melee branch dealt real
+    // damage via doMeleeAttack but returned before the 'shot' SimEvent the
+    // client gates ALL fire feedback on (sound/kick/hit-marker) -- looked
+    // exactly like "the gun did nothing" for arc_blade/grav_maul specifically.
+    const sim = new MatchSim('gutter', 601)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    a.weapons = ['arc_blade', 'arc_blade']
+    a.activeWeapon = 0
+    a.pos = { x: 0, y: 0, z: 0 }
+    a.yaw = 0
+    a.pitch = 0
+    b.pos = { x: 0, y: 0, z: 2 } // within arc_blade's lungeRange (5), dead ahead
+
+    sim.setInput('a', makeInput({ yaw: 0, pitch: 0, fire: true }))
+    const events = sim.tick(TICK_DT)
+
+    expect(events.some((e) => e.type === 'shot' && e.playerId === 'a' && e.weapon === 'arc_blade')).toBe(
+      true
+    )
+    // The fix must not change the pre-existing damage behavior.
+    expect(b.alive).toBe(false)
   })
 })

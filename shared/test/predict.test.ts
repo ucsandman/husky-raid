@@ -97,7 +97,13 @@ describe('Predictor', () => {
   })
 
   it('reconcile arrives while predicted is mid-slide and the replay matches a fresh server replay bit-identically', () => {
-    const predicted = makeTestPlayer()
+    // Start on flat center-lane ground rather than the default spawn: from
+    // the spawn pad a sprinting player crosses the platform's step edge
+    // (z~-21) partway through, goes airborne, and correctly ends the slide
+    // there -- which would make this test's mid-slide precondition depend on
+    // terrain instead of on the reconcile behaviour it actually checks.
+    const START = { x: 0, y: 0, z: -15 }
+    const predicted = makeTestPlayer({ pos: { ...START } })
     const predictor = new Predictor(MAPS.gutter)
     const inputs: PlayerInput[] = []
 
@@ -122,13 +128,13 @@ describe('Predictor', () => {
     }
     expect(predicted.sliding).toBe(true) // confirms the reconcile below really does arrive mid-slide
 
-    const server = makeTestPlayer()
+    const server = makeTestPlayer({ pos: { ...START } })
     for (let i = 0; i <= ACK_SEQ; i++) stepMovement(server, inputs[i], MAPS.gutter, inputs[i].dt)
     const serverSnap = toSnapPlayer(server, 0)
 
     predictor.reconcile(predicted, serverSnap, ACK_SEQ)
 
-    const reference = makeTestPlayer()
+    const reference = makeTestPlayer({ pos: { ...START } })
     for (const input of inputs) stepMovement(reference, input, MAPS.gutter, input.dt)
 
     expect(predicted.pos).toEqual(reference.pos)

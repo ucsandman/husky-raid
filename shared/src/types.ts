@@ -24,6 +24,9 @@ export interface PlayerInput {
   swap: boolean
   sprint?: boolean
   slideRequest?: boolean
+  /** Optional so bots, defaultInput, and every existing test helper keep
+   * compiling untouched -- same convention as sprint/slideRequest above. */
+  ads?: boolean
 }
 
 export type Team = 0 | 1
@@ -104,4 +107,10 @@ export interface PlayerState {
   coyoteTimeRemaining: number
   /** Countdown (seconds remaining), same convention as teleportCooldownUntil. */
   jumpBufferRemaining: number
+  /** True while the player is currently aiming down sights (scoped) --
+   * recomputed every tick directly from input.ads, mirroring how
+   * sprinting is recomputed from input.sprint. Tightens hitscan/burst
+   * spread (ADS_SPREAD_MULT) and slows ground movement (ADS_MOVE_MULT);
+   * sprint is disabled outright while scoped. */
+  scoped: boolean
 }

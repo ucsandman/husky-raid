@@ -149,17 +149,20 @@ describe('MatchSim: match ends at 3 captures', () => {
   })
 })
 
-describe('MatchSim: suicide in pit', () => {
-  it('scores a death but no kill credit', () => {
+describe('MatchSim: deathY safety net (not reachable by normal play)', () => {
+  it('a player who ends up below the map still scores a death but no kill credit', () => {
     const sim = new MatchSim('gutter', 5)
     const a = sim.addPlayer('a', 'A', 0, false)
     sim.addPlayer('b', 'B', 1, false)
 
-    // x = -3.5 sits in the gutter's death-pit gap (no floor box between the
-    // center lane at x=[-3,3] and the left rail at x=[-6,-4]) and is well
-    // clear of both launch pads (at x=-1 and x=1, radius 1), so the player
-    // falls straight through to deathY instead of getting relaunched.
-    a.pos = { x: -3.5, y: 5, z: 0 }
+    // The gutter's floor is one continuous surface now -- there is no
+    // in-bounds position a player can walk, strafe, or get launched into
+    // that falls through it (x=-3.5, the old death-pit gap, is solid floor
+    // -- see gutter.ts and physics.test.ts's 'former gutter gap' test).
+    // This simulates the one case deathY still exists for: a player who
+    // somehow ends up below the map entirely, which must still resolve to
+    // a self-kill with no credit, not a stuck or frozen player.
+    a.pos = { x: 0, y: MAPS.gutter.deathY - 5, z: 0 }
     a.vel = { x: 0, y: 0, z: 0 }
     a.grounded = false
 

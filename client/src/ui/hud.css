@@ -45,6 +45,12 @@
   box-shadow: 0 0 4px var(--danger);
 }
 
+/* Hidden while scoped (Hud.setScoped()) so ADS doesn't show two reticles at
+   once. Kick/recovery/target-tracking keep running underneath, unseen. */
+.hud-crosshair--hidden {
+  opacity: 0;
+}
+
 .hud-crosshair-line--n,
 .hud-crosshair-line--s {
   width: 2px;
@@ -141,6 +147,93 @@
   height: 3px;
   background: #fff2c2;
   box-shadow: 0 0 10px gold;
+}
+
+/* ---- ADS scope overlay -------------------------------------------------
+   CSS-only vignette + reticle for aim-down-sights (Hud.setScoped()). No
+   camera/FOV logic here -- that's driven separately off InputManager's
+   `ads` sample; this class only owns the look. Built the same way as
+   .hud-crosshair above: a wrapper plus four line divs, gapped at the
+   center so it reads as a reticle rather than a solid cross. */
+
+.hud-scope {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.hud-scope--show {
+  opacity: 1;
+}
+
+.hud-scope::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at center,
+    transparent 0%,
+    transparent 27%,
+    rgba(10, 13, 20, 0.55) 40%,
+    rgba(10, 13, 20, 0.97) 63%
+  );
+}
+
+.hud-scope::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(80vmin, 640px);
+  height: min(80vmin, 640px);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+
+.hud-scope-reticle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+}
+
+.hud-scope-reticle-line {
+  position: absolute;
+  background: var(--text);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+}
+
+.hud-scope-reticle-line--n,
+.hud-scope-reticle-line--s {
+  width: 1px;
+  height: 36px;
+  left: 0;
+}
+
+.hud-scope-reticle-line--w,
+.hud-scope-reticle-line--e {
+  width: 36px;
+  height: 1px;
+  top: 0;
+}
+
+.hud-scope-reticle-line--n {
+  top: -54px;
+}
+
+.hud-scope-reticle-line--s {
+  top: 18px;
+}
+
+.hud-scope-reticle-line--w {
+  left: -54px;
+}
+
+.hud-scope-reticle-line--e {
+  left: 18px;
 }
 
 /* ---- damage feedback (full-screen vignette + directional source) ------ */
@@ -582,6 +675,60 @@
 .hud-respawn-count {
   font-size: 3rem;
   font-weight: 700;
+}
+
+/* ---- input-paused overlay ------------------------------------------------
+   Shown whenever pointer lock/keyboard focus has been lost mid-match (Esc,
+   alt-tab, window blur) -- see Hud.setInputPaused(). Before this existed,
+   losing lock silently killed all input with nothing on screen to explain
+   why (docs/ERRORS.md, 2026-08-14: "the game rendered perfectly and ignored
+   the keyboard completely"). Pointer-events stay inherited (none) from
+   .hud on purpose -- this must never block the click that re-acquires
+   lock, which is the exact bug that incident was. */
+
+.hud-input-paused {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  background: rgba(10, 13, 20, 0.6);
+  text-align: center;
+}
+
+.hud-input-paused--show {
+  display: flex;
+}
+
+.hud-input-paused-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  text-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
+  animation: hud-input-paused-pulse 1.6s ease-in-out infinite;
+}
+
+.hud-input-paused-hint {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+@keyframes hud-input-paused-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-input-paused-title {
+    animation: none;
+  }
 }
 
 /* ---- scoreboard (Tab held) ----------------------------------------------- */

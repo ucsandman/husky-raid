@@ -55,6 +55,7 @@ import {
   RELOAD_TIME,
   HOMING_CONE_ANGLE,
   MELEE_LUNGE_SPEED,
+  ADS_SPREAD_MULT,
 } from './constants'
 
 export interface FlagState {
@@ -203,6 +204,7 @@ export class MatchSim {
       slideCooldownRemaining: 0,
       coyoteTimeRemaining: 0,
       jumpBufferRemaining: 0,
+      scoped: false,
     }
     this.players.set(id, p)
     this.lastGroundedPos.set(id, { ...spawn })
@@ -293,6 +295,9 @@ export class MatchSim {
 
       if (p.grounded) this.lastGroundedPos.set(p.id, { ...p.pos })
 
+      // p.scoped is set inside stepMovement itself (mirrors p.sprinting) --
+      // by the time stepFire runs below, it already reflects this tick's
+      // input.ads and is ready for stepFire's own ADS_SPREAD_MULT read.
       const moveResult = stepMovement(p, input, this.map, dt)
       if (moveResult === 'fell') {
         const dropPos = this.lastGroundedPos.get(p.id) ?? { ...p.pos }
@@ -412,6 +417,7 @@ export class MatchSim {
     p.slideCooldownRemaining = 0
     p.coyoteTimeRemaining = 0
     p.jumpBufferRemaining = 0
+    p.scoped = false
     this.lastGroundedPos.set(p.id, { ...spawn })
   }
 
@@ -564,6 +570,11 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
 
   if (weapon.kind === 'power_melee') {
     doMeleeAttack(sim, p, weapon.lungeRange ?? MELEE_RANGE, weapon.damage, weaponId, now, events)
+    // Bug fix (diagnosis-confirmed): this branch returned before the 'shot'
+    // event below, so arc_blade/grav_maul dealt real damage but the client
+    // never got the event it gates ALL fire feedback on (sound/kick/hit-
+    // marker) -- looked exactly like "the gun did nothing" for that weapon.
+    events.push({ type: 'shot', playerId: p.id, weapon: weaponId })
     p.cooldownUntil = now + 1 / weapon.rof
     return
   }
@@ -589,9 +600,13 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
 
   if (weapon.kind === 'hitscan' || weapon.kind === 'burst') {
     const maxRange = weapon.maxRange ?? HITSCAN_MAX_RANGE
+    // ADS: scoping meaningfully tightens the cone (spec: "a scope that
+    // doesn't improve accuracy is a lie"). Single point WeaponDef.spread is
+    // consumed for hitscan/burst weapons -- see jitterDir below.
+    const spread = p.scoped ? weapon.spread * ADS_SPREAD_MULT : weapon.spread
     const playersArr = [...sim.players.values()]
     for (let i = 0; i < weapon.pellets; i++) {
-      const pelletDir = jitterDir(dir, weapon.spread, sim)
+      const pelletDir = jitterDir(dir, spread, sim)
       const hit = raycast(eye, pelletDir, maxRange, sim.map.boxes, playersArr, p.id)
       if (hit.kind === 'player' && hit.playerId) {
         const target = sim.players.get(hit.playerId)
