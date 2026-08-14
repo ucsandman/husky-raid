@@ -92,6 +92,27 @@ export class HostedMatch {
     if (this.humanIds.has(id)) this.ackSeqByPlayer.set(id, input.seq)
   }
 
+  /**
+   * Removes a human mid-match and replaces them with a bot, preserving the
+   * outgoing player's kills/deaths/captures under the bot's new identity
+   * (sim.addPlayer always zeroes a fresh player's stats). Used by Lobby for
+   * disconnect handling -- humanIds/ackSeqByPlayer are private to this class,
+   * so the swap can't be done from outside via sim.removePlayer alone.
+   */
+  removeHuman(id: string): PlayerState {
+    const outgoing = this.sim.players.get(id)
+    this.sim.removePlayer(id)
+    this.humanIds.delete(id)
+    this.ackSeqByPlayer.delete(id)
+    const bot = this.addBot()
+    if (outgoing) {
+      bot.kills = outgoing.kills
+      bot.deaths = outgoing.deaths
+      bot.captures = outgoing.captures
+    }
+    return bot
+  }
+
   start(): void {
     if (this.interval) return
     this.simNow = this.nowFn()
