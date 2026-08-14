@@ -12,8 +12,13 @@ import './ui/style.css'
 // that way any PORT the server was started with just works. The :8080
 // fallback is only for the Vite dev server case (client on :5173, server on
 // the default :8080) and any other context with no page port to go on.
+// Protocol-aware: wss:// when the page itself was loaded over https:, so a
+// production deploy behind TLS doesn't get mixed-content blocked.
+const WS_PROTOCOL = location.protocol === 'https:' ? 'wss' : 'ws'
 const SERVER_URL =
-  !location.port || location.port === '5173' ? `ws://${location.hostname}:8080` : `ws://${location.host}`
+  !location.port || location.port === '5173'
+    ? `${WS_PROTOCOL}://${location.hostname}:8080`
+    : `${WS_PROTOCOL}://${location.host}`
 // Server snapshots at 20Hz -- log once a second instead of flooding the console.
 const SNAPSHOT_LOG_INTERVAL = 20
 

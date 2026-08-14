@@ -1,1 +1,1 @@
-{ "extends": "../tsconfig.base.json", "include": ["src"], "compilerOptions": { "outDir": "dist", "types": ["node"] }, "references": [{ "path": "../shared" }] }
+{ "extends": "../tsconfig.base.json", "include": ["src", "test"], "compilerOptions": { "outDir": "dist", "types": ["node"] }, "references": [{ "path": "../shared" }] }

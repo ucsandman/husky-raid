@@ -125,6 +125,11 @@ export class Lobby {
   }
 
   private onJoinRoom(player: PlayerConn, code: string): void {
+    // Trust-boundary guard (fix 3): code arrives as untrusted client JSON,
+    // so its shape is checked before it's used as a lookup key at all.
+    if (typeof code !== 'string' || !/^[A-Z]{4}$/.test(code)) {
+      return this.sendError(player, 'invalid room code')
+    }
     const room = this.rooms.get(code)
     if (!room) return this.sendError(player, 'room not found')
     if (player.roomCode === code) return

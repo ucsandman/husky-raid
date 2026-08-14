@@ -27,7 +27,6 @@ export interface WeaponDef {
   splashRadius?: number
   homing?: boolean
   lungeRange?: number
-  aoeRadius?: number
   /** Max hitscan/burst raycast distance. Falls back to HITSCAN_MAX_RANGE
    * when unset. */
   maxRange?: number
@@ -141,7 +140,6 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     magSize: 1,
     pellets: 1,
     spread: 0,
-    aoeRadius: 4,
   },
 }
 

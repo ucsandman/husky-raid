@@ -101,6 +101,41 @@ describe('HostedMatch: match end', () => {
   })
 })
 
+describe('HostedMatch: input sanitization at the trust boundary (fix 3)', () => {
+  it('coerces malformed input fields so the sim never goes non-finite', () => {
+    const match = new HostedMatch('gutter', 5, () => {})
+    match.addHuman('h1', 'Human1')
+
+    match.handleInput('h1', {
+      seq: Infinity,
+      dt: 9e9,
+      yaw: Infinity,
+      pitch: 999,
+      forward: 9e9,
+      strafe: -9e9,
+      jump: 'x' as unknown as boolean,
+      fire: false,
+      melee: false,
+      grenade: false,
+      equipment: false,
+      swap: false,
+    })
+
+    const p = match.sim.players.get('h1')!
+    match.sim.tick(TICK_DT)
+
+    expect(Number.isFinite(p.pos.x)).toBe(true)
+    expect(Number.isFinite(p.pos.y)).toBe(true)
+    expect(Number.isFinite(p.pos.z)).toBe(true)
+    expect(Number.isFinite(p.vel.x)).toBe(true)
+    expect(Number.isFinite(p.vel.y)).toBe(true)
+    expect(Number.isFinite(p.vel.z)).toBe(true)
+    expect(Number.isFinite(p.yaw)).toBe(true)
+    expect(p.pitch).toBeGreaterThanOrEqual(-Math.PI / 2)
+    expect(p.pitch).toBeLessThanOrEqual(Math.PI / 2)
+  })
+})
+
 describe('HostedMatch: SnapPlayer HUD fields (Task 14)', () => {
   it('sends ammo/grenades/equipment/equipmentCharges with sane values for every player', () => {
     vi.useFakeTimers()

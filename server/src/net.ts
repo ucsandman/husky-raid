@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
-import { join, extname } from 'node:path'
+import { join, extname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import * as WS from 'ws'
@@ -81,7 +81,11 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse, lobby: Lobb
 async function resolveStaticFile(pathname: string): Promise<string | null> {
   const rel = pathname === '/' ? '/index.html' : pathname
   const filePath = join(CLIENT_DIST, rel)
-  if (!filePath.startsWith(CLIENT_DIST)) return null // guard against path traversal
+  // Guard against path traversal: a startsWith(CLIENT_DIST) check alone
+  // would also match a sibling directory that happens to share the prefix
+  // (e.g. CLIENT_DIST + '-evil'), so require the full separator boundary --
+  // except for CLIENT_DIST itself, kept as an exact-index match.
+  if (filePath !== CLIENT_DIST && !filePath.startsWith(CLIENT_DIST + sep)) return null
 
   try {
     const s = await stat(filePath)
@@ -98,6 +102,14 @@ async function resolveStaticFile(pathname: string): Promise<string | null> {
     return null
   }
   return null
+}
+
+/** Trust-boundary coercion for the hello message's `name` field (fix 3):
+ * client JSON is untrusted, so a non-string name falls back to 'Player'
+ * and any string is capped at 24 chars before it ever reaches the lobby. */
+export function sanitizeName(name: unknown): string {
+  if (typeof name !== 'string') return 'Player'
+  return name.slice(0, 24)
 }
 
 function handleConnection(ws: WS.WebSocket, lobby: Lobby): void {
@@ -122,7 +134,7 @@ function handleConnection(ws: WS.WebSocket, lobby: Lobby): void {
         return
       }
       playerId = randomUUID()
-      lobby.connect(playerId, msg.name, send)
+      lobby.connect(playerId, sanitizeName(msg.name), send)
       send({ t: 'welcome', playerId })
       return
     }

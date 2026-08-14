@@ -1,6 +1,7 @@
 import {
   MatchSim,
   toSnapPlayer,
+  clamp,
   TICK_DT,
   TICK_RATE,
   SNAPSHOT_RATE,
@@ -125,9 +126,17 @@ export class HostedMatch {
     this.brains.delete(id)
   }
 
+  /**
+   * Trust-boundary sanitization: `input` arrives as untrusted client JSON
+   * (network trust boundary), so every field is coerced/clamped here before
+   * it ever reaches the sim -- a NaN/Infinity yaw or pitch would otherwise
+   * propagate through viewDir's sin/cos into NaN positions across the whole
+   * deterministic sim (see fix 3).
+   */
   handleInput(id: string, input: PlayerInput): void {
-    this.sim.setInput(id, input)
-    if (this.humanIds.has(id)) this.ackSeqByPlayer.set(id, input.seq)
+    const sanitized = sanitizeInput(input)
+    this.sim.setInput(id, sanitized)
+    if (this.humanIds.has(id)) this.ackSeqByPlayer.set(id, sanitized.seq)
   }
 
   /**
@@ -247,5 +256,35 @@ export class HostedMatch {
     }))
     const msg: ServerMsg = { t: 'match_end', winner, scores: this.sim.scores, board }
     for (const id of this.humanIds) this.onSend(id, msg)
+  }
+}
+
+/** Finite-number guard with a fallback for a value that may not even be a number at runtime. */
+function finiteOr(n: unknown, fallback: number): number {
+  return typeof n === 'number' && Number.isFinite(n) ? n : fallback
+}
+
+/**
+ * Coerces every field of an inbound `input` message at the trust boundary
+ * (fix 3): numeric fields are finite-guarded (with a fallback) before any
+ * clamping, pitch is clamped to +/-90deg, forward/strafe to [-1, 1],
+ * booleans are forced via `!!`, and dt is forced to TICK_DT regardless of
+ * what the client sent (the sim is a fixed-timestep contract; the client's
+ * dt is never trusted).
+ */
+function sanitizeInput(input: PlayerInput): PlayerInput {
+  return {
+    seq: finiteOr(input.seq, 0),
+    dt: TICK_DT,
+    yaw: finiteOr(input.yaw, 0),
+    pitch: clamp(finiteOr(input.pitch, 0), -Math.PI / 2, Math.PI / 2),
+    forward: clamp(finiteOr(input.forward, 0), -1, 1),
+    strafe: clamp(finiteOr(input.strafe, 0), -1, 1),
+    jump: !!input.jump,
+    fire: !!input.fire,
+    melee: !!input.melee,
+    grenade: !!input.grenade,
+    equipment: !!input.equipment,
+    swap: !!input.swap,
   }
 }

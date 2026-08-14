@@ -190,7 +190,6 @@ export interface Projectile {
   fuseAt: number
   homingTargetId?: string
   stuckToId?: string
-  chargeFrac?: number
 }
 
 function steerTowards(curDir: Vec3, targetDir: Vec3, maxAngle: number): Vec3 {

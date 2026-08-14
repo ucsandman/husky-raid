@@ -53,6 +53,7 @@ import {
   DEFAULT_PROJECTILE_SPEED,
   SWAP_COOLDOWN,
   RELOAD_TIME,
+  HOMING_CONE_ANGLE,
 } from './constants'
 
 export interface FlagState {
@@ -120,6 +121,7 @@ function jitterDir(dir: Vec3, spread: number, sim: MatchSim): Vec3 {
 function equipmentChargesFor(eq: EquipmentId | null): number {
   if (eq === 'grapple') return GRAPPLE_CHARGES
   if (eq === 'repulsor') return REPULSOR_CHARGES
+  if (eq === 'camo') return 1
   return 0
 }
 
@@ -430,6 +432,30 @@ export class MatchSim {
 // Module-private helpers (not exported).
 // ---------------------------------------------------------------------------
 
+/**
+ * Nearest living enemy within a ~30deg forward cone of `dir`, or undefined
+ * if none qualify. Iterates sim.players in Map insertion order so target
+ * acquisition stays deterministic under a given seed + input script.
+ */
+function findHomingTarget(sim: MatchSim, shooter: PlayerState, dir: Vec3): string | undefined {
+  const cosHalfCone = Math.cos(HOMING_CONE_ANGLE)
+  let bestId: string | undefined
+  let bestDist = Infinity
+  for (const target of sim.players.values()) {
+    if (target.id === shooter.id || target.team === shooter.team || !target.alive) continue
+    const toTarget = sub(target.pos, shooter.pos)
+    const dist = length(toTarget)
+    if (dist < 1e-6) continue
+    const cosAngle = dot(dir, scale(toTarget, 1 / dist))
+    if (cosAngle < cosHalfCone) continue
+    if (dist < bestDist) {
+      bestDist = dist
+      bestId = target.id
+    }
+  }
+  return bestId
+}
+
 function projectileKindForWeapon(id: WeaponId): Projectile['kind'] | null {
   switch (id) {
     case 'boomtube':
@@ -467,6 +493,7 @@ function doMeleeAttack(
   now: number,
   events: SimEvent[]
 ): void {
+  // Melee cone is computed against flat (pitch-ignored) forward -- intentional for v1.
   const forward = viewDir(attacker.yaw, 0)
   const cosHalfCone = Math.cos(MELEE_VIEW_CONE / 2)
   let best: PlayerState | null = null
@@ -506,6 +533,9 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
 
   if (now < p.cooldownUntil) return
 
+  // Flag carrier cannot shoot (spec §2): melee stays functional and rate-limited.
+  if (p.carryingFlag !== null && !input.melee) return
+
   if (input.melee) {
     doMeleeAttack(sim, p, MELEE_RANGE, MELEE_DAMAGE, 'melee', now, events)
     p.cooldownUntil = now + MELEE_COOLDOWN
@@ -536,6 +566,8 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
     p.cooldownUntil = now + 1 / weapon.rof
   }
   events.push({ type: 'shot', playerId: p.id, weapon: weaponId })
+  // Camo breaks on a committed shot (spec §3), not on melee/power-melee/swap/blocked fire.
+  p.camoUntil = 0
 
   const eye = eyePos(p)
   const dir = viewDir(p.yaw, p.pitch)
@@ -562,7 +594,7 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
 
   const kind = projectileKindForWeapon(weaponId)
   if (kind) {
-    sim.projectiles.push({
+    const projectile: Projectile = {
       id: sim.nextId(),
       kind,
       pos: eye,
@@ -570,7 +602,12 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
       ownerId: p.id,
       team: p.team,
       fuseAt: now + PROJECTILE_LIFETIME,
-    })
+    }
+    if (weapon.homing) {
+      const targetId = findHomingTarget(sim, p, dir)
+      if (targetId) projectile.homingTargetId = targetId
+    }
+    sim.projectiles.push(projectile)
   }
 }
 
@@ -601,13 +638,14 @@ function stepEquipment(sim: MatchSim, p: PlayerState, input: PlayerInput, now: n
   if (!input.equipment || !p.equipment) return
   if (now < p.equipmentCooldownUntil) return
 
+  if (p.equipmentCharges <= 0) return
+
   if (p.equipment === 'camo') {
     p.camoUntil = now + CAMO_DURATION
     p.equipmentCooldownUntil = now + CAMO_DURATION
+    p.equipmentCharges -= 1
     return
   }
-
-  if (p.equipmentCharges <= 0) return
 
   if (p.equipment === 'grapple') {
     const eye = eyePos(p)

@@ -1,5 +1,5 @@
 import type { GameMap, MatchSim, PlayerInput, PlayerState, Team, Vec3, WeaponId } from '@riftlane/shared'
-import { EYE_HEIGHT, PLAYER_BODY_CENTER_Y, TICK_DT, WEAPONS, add, distSq, dot, length, mulberry32, normalize, raycast, scale, sub } from '@riftlane/shared'
+import { EYE_HEIGHT, MELEE_RANGE, PLAYER_BODY_CENTER_Y, TICK_DT, WEAPONS, add, distSq, dot, length, mulberry32, normalize, raycast, scale, sub } from '@riftlane/shared'
 import { Navigator } from './nav'
 import type { Role } from './roles'
 
@@ -241,19 +241,26 @@ export class BotBrain {
     let yaw = navYaw
     let pitch = steer.input.pitch ?? p.pitch
     let fire = false
+    let melee = false
     let swap = false
 
     if (visible) {
       const dist = Math.sqrt(distSq(p.pos, visible.pos))
-      const desiredSlot = this.desiredWeaponSlot(p, dist)
-      if (desiredSlot !== p.activeWeapon && now >= this.nextSwapAllowedAt) {
-        swap = true
-        this.nextSwapAllowedAt = now + BRAIN.SWAP_INTERNAL_COOLDOWN
-      }
       const aim = this.computeAim(p, visible, now)
       yaw = aim.yaw
       pitch = aim.pitch
-      fire = canFire
+      if (p.carryingFlag !== null) {
+        // Carrier cannot shoot (fix 1) -- melee is its only defense, so swap
+        // to melee-in-range instead of the normal fire/weapon-swap logic.
+        melee = canFire && dist <= MELEE_RANGE
+      } else {
+        const desiredSlot = this.desiredWeaponSlot(p, dist)
+        if (desiredSlot !== p.activeWeapon && now >= this.nextSwapAllowedAt) {
+          swap = true
+          this.nextSwapAllowedAt = now + BRAIN.SWAP_INTERNAL_COOLDOWN
+        }
+        fire = canFire
+      }
     }
 
     let grenade = false
@@ -261,6 +268,7 @@ export class BotBrain {
     if (cluster) {
       grenade = true
       fire = false
+      melee = false
       const aim = yawPitchTo(eyePos(p), cluster)
       yaw = aim.yaw
       pitch = Math.max(aim.pitch, BRAIN.GRENADE_LOB_MIN_PITCH)
@@ -279,6 +287,7 @@ export class BotBrain {
       pitch = aim.pitch
       grenade = false
       fire = false
+      melee = false
     } else if (p.equipment === 'repulsor' && this.shouldRepulse(p, sim, enemies)) {
       equipment = true
     } else if (p.equipment === 'camo' && role === 'runner' && this.nearEnemyFlagStand(p, map, enemyTeam)) {
@@ -296,7 +305,7 @@ export class BotBrain {
       strafe,
       jump: steer.input.jump ?? false,
       fire,
-      melee: false,
+      melee,
       grenade,
       equipment,
       swap,

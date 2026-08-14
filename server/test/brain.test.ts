@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { BotBrain, DEFAULT_DIFFICULTY } from '../src/bots/brain'
 import { assignRoles, type Role } from '../src/bots/roles'
-import { MatchSim, TICK_DT } from '@riftlane/shared'
+import { MatchSim, TICK_DT, MATCH_TIME } from '@riftlane/shared'
 import type { PlayerState } from '@riftlane/shared'
 
 describe('assignRoles: idle team', () => {
@@ -175,7 +175,7 @@ describe('BotBrain: weapon choice', () => {
 })
 
 describe('BotBrain: full 8-bot match', () => {
-  it('produces at least one capture within 5 sim-minutes, no exceptions', () => {
+  it('produces at least one capture and reaches a decisive conclusion within a full match, no exceptions', () => {
     const sim = new MatchSim('gutter', 42)
     const brains = new Map<string, BotBrain>()
     for (let i = 0; i < 8; i++) {
@@ -187,13 +187,16 @@ describe('BotBrain: full 8-bot match', () => {
 
     // Drive MatchSim + BotBrains directly, mirroring HostedMatch's per-tick
     // wiring (assign roles every 2s / on flag events, think() before tick()),
-    // without any real setInterval -- a fast headless loop capped at 5
-    // sim-minutes even though MATCH_TIME (480s) is longer.
+    // without any real setInterval.
     let roles = new Map<string, Role>()
     let lastRoleAssignAt = -Infinity
     let now = 0
     let captured = false
-    const maxTime = 300
+    // Full MATCH_TIME (480s), not an arbitrary 5-minute cap: fix 1 (carrier
+    // cannot shoot, melee only) makes flag carriers meaningfully more
+    // vulnerable, so the seeded 8-bot match now takes longer to resolve
+    // than the old (buggy) baseline where a carrier could still fire back.
+    const maxTime = MATCH_TIME
 
     const recomputeRoles = () => {
       const bots = [...sim.players.values()]
@@ -224,12 +227,12 @@ describe('BotBrain: full 8-bot match', () => {
     expect(captured).toBe(true)
     // Guards against a silent regression to "one capture right before the
     // clock runs out": the match must actually reach a decisive conclusion
-    // (a team hitting CAPTURES_TO_WIN) within the 5-minute cap, not merely
-    // produce a single capture event somewhere in a near-300s match.
+    // (a team hitting CAPTURES_TO_WIN) within the match clock, not merely
+    // produce a single capture event somewhere in a near-480s match.
     // sim.phase only becomes 'ended' here via CAPTURES_TO_WIN -- timeLeft
-    // (seeded from MATCH_TIME=480) can't reach 0 within our 300s loop, so
-    // this is unambiguous. Empirically the seeded match reaches a 3-0
-    // sweep by ~t=89s, comfortably inside the window.
+    // starts at MATCH_TIME and the loop stops as soon as phase flips, so it
+    // can't reach 0 first. Empirically the seeded match reaches a decisive
+    // score by ~t=356s, comfortably inside the window.
     expect(sim.phase).toBe('ended')
     expect(now).toBeLessThan(maxTime)
   })

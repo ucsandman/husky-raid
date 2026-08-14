@@ -154,6 +154,32 @@ describe('Lobby: disconnect mid-match swaps in a bot', () => {
   })
 })
 
+describe('Lobby: join_room rejects malformed room codes (fix 3)', () => {
+  it('reports a distinct "invalid room code" error for a non-4-char/non-A-Z code, not "room not found"', () => {
+    const lobby = new Lobby(fakeRand())
+    const a = makePlayer('a')
+    lobby.connect(a.id, 'Alice', a.send)
+
+    lobby.handle(a.id, { t: 'join_room', code: 'ab1!' })
+    expect(a.received.find(isError)?.message).toBe('invalid room code')
+
+    a.received.length = 0
+    lobby.handle(a.id, { t: 'join_room', code: 'TOOLONG' })
+    expect(a.received.find(isError)?.message).toBe('invalid room code')
+
+    a.received.length = 0
+    lobby.handle(a.id, { t: 'join_room', code: 12345 as unknown as string })
+    expect(a.received.find(isError)?.message).toBe('invalid room code')
+
+    // A well-formed but nonexistent code still gets the original message.
+    a.received.length = 0
+    lobby.handle(a.id, { t: 'join_room', code: 'ZZZZ' })
+    expect(a.received.find(isError)?.message).toBe('room not found')
+
+    lobby.stop()
+  })
+})
+
 describe('Lobby: rematch votes from departed players expire', () => {
   it('does not let a stale vote from a disconnected player count toward the majority', () => {
     const lobby = new Lobby(fakeRand())

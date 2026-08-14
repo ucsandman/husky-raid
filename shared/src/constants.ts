@@ -53,6 +53,10 @@ export const MAG_DAMAGE = 110
 // on ion_charge projectiles at spawn time)
 export const HOMING_TURN_RATE = 4 // rad/s
 
+// Combat: homing target acquisition cone at spawn time, half-angle from the
+// shooter's aim direction (~30 degrees, per spec's "forward cone").
+export const HOMING_CONE_ANGLE = Math.PI / 6
+
 // Combat: swarm pod stick-pop bonus
 export const SWARM_POP_THRESHOLD = 6
 export const SWARM_POP_DAMAGE = 80
