@@ -477,6 +477,25 @@
   font-weight: 700;
 }
 
+/* Mid-reload: the trigger is genuinely locked out, so the readout says so
+   instead of showing a count. Pulses to read as a timed state, not a value. */
+.hud-weapon-ammo--reloading {
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  color: var(--warn, #ffb347);
+  animation: hud-reloading-pulse 0.6s ease-in-out infinite;
+}
+
+@keyframes hud-reloading-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
 .hud-chips {
   display: flex;
   gap: 0.4rem;

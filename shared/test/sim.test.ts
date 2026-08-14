@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { MatchSim } from '../src/sim'
 import { mulberry32 } from '../src/rng'
-import { rollLoadout } from '../src/weapons'
+import { rollLoadout, WEAPONS } from '../src/weapons'
 import { MAPS } from '../src/maps'
 import {
   TICK_DT,
@@ -12,6 +12,7 @@ import {
   MAX_HEALTH,
   CAMO_DURATION,
   MELEE_LUNGE_SPEED,
+  RELOAD_TIME,
 } from '../src/constants'
 import { makeInput } from './helpers'
 
@@ -208,6 +209,41 @@ describe('MatchSim: determinism', () => {
     const runA = buildAndRun()
     const runB = buildAndRun()
     expect(runA).toEqual(runB)
+  })
+})
+
+describe('MatchSim: an empty magazine reads as empty', () => {
+  it('holds ammo at 0 for the whole reload lockout and refills when it ends', () => {
+    const sim = new MatchSim('gutter', 10)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    a.weapons = ['sidearm', 'sidearm'] // rof 4, magSize 12
+    a.ammo = [1, 12]
+    a.activeWeapon = 0
+    b.pos = { x: 1000, y: 0, z: 1000 } // out of range so no stray hits
+
+    // The shot that empties the mag still fires...
+    sim.setInput('a', makeInput({ yaw: a.yaw, fire: true }))
+    let now = TICK_DT
+    let events = sim.tick(now)
+    expect(events.some((e) => e.type === 'shot' && e.playerId === 'a')).toBe(true)
+    // ...and leaves the magazine visibly empty, rather than showing a full mag
+    // on a weapon that will refuse to fire for the next RELOAD_TIME seconds.
+    expect(a.ammo[0]).toBe(0)
+    expect(a.cooldownUntil).toBeCloseTo(now + RELOAD_TIME, 5)
+
+    // Still empty and still locked out partway through the reload.
+    now += RELOAD_TIME / 2
+    sim.setInput('a', makeInput({ yaw: a.yaw, fire: true }))
+    events = sim.tick(now)
+    expect(events.some((e) => e.type === 'shot' && e.playerId === 'a')).toBe(false)
+    expect(a.ammo[0]).toBe(0)
+
+    // Once the lockout expires the magazine is back, without needing input.
+    now += RELOAD_TIME
+    sim.setInput('a', makeInput({ yaw: a.yaw }))
+    sim.tick(now)
+    expect(a.ammo[0]).toBe(WEAPONS.sidearm.magSize)
   })
 })
 

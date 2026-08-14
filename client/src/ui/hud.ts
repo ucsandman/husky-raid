@@ -537,7 +537,12 @@ export class Hud {
       const def = WEAPONS[weaponId]
       const els = this.weaponRows[slot]
       els.name.textContent = def.name
-      els.ammo.textContent = `${local.ammo[slot]}/${def.magSize}`
+      // An empty mag means the sim is mid-reload (it refills only when the
+      // RELOAD_TIME lockout ends), so say so -- a dead trigger with no
+      // explanation is indistinguishable from a broken gun.
+      const reloading = local.ammo[slot] <= 0 && def.kind !== 'power_melee'
+      els.ammo.textContent = reloading ? 'RELOADING' : `${local.ammo[slot]}/${def.magSize}`
+      els.ammo.classList.toggle('hud-weapon-ammo--reloading', reloading)
       els.row.classList.toggle('hud-weapon-row--active', slot === local.activeWeapon)
     }
   }

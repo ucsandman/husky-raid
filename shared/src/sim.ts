@@ -554,6 +554,14 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
 
   if (now < p.cooldownUntil) return
 
+  // Reload completes here rather than at the instant the mag ran dry, so the
+  // magazine the HUD shows is the magazine the gun actually has. Refilling on
+  // the emptying shot (as this used to) displayed a FULL mag through the whole
+  // RELOAD_TIME lockout, which reads as "the gun just won't shoot".
+  if (p.ammo[p.activeWeapon] <= 0) {
+    p.ammo[p.activeWeapon] = WEAPONS[p.weapons[p.activeWeapon]].magSize
+  }
+
   // Flag carrier cannot shoot (spec §2): melee stays functional and rate-limited.
   if (p.carryingFlag !== null && !input.melee) return
 
@@ -579,14 +587,14 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
     return
   }
 
-  // Ammo/reload: the shot that empties the mag still fires, but ammo
-  // refills immediately and cooldownUntil is set to RELOAD_TIME instead
-  // of the usual 1/rof, locking the weapon out until reload completes.
+  // Ammo/reload: the shot that empties the mag still fires, then the weapon
+  // locks out for RELOAD_TIME instead of the usual 1/rof. Ammo stays at 0 for
+  // that whole window and is refilled by the reload-completion branch at the
+  // top of this function, so the HUD can show an empty mag while it lasts.
   // Power-melee weapons never reach here (returned above), matching the
   // "power melee exempt from reload" ruling with no extra branching.
   p.ammo[p.activeWeapon] -= 1
   if (p.ammo[p.activeWeapon] <= 0) {
-    p.ammo[p.activeWeapon] = weapon.magSize
     p.cooldownUntil = now + RELOAD_TIME
   } else {
     p.cooldownUntil = now + 1 / weapon.rof
