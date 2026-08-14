@@ -101,3 +101,14 @@ The token is a separate `randomUUID`, deliberately NOT the playerId: playerIds a
 Two consequences worth knowing. A room now outlives its last human by up to 60s, so `Lobby.stop()` had to start stopping running matches explicitly (nothing else would), and an expiry sweep runs on the existing queue timer rather than a new one. And resumption is in-memory only: a server restart loses every match, so the free plan waking from sleep still gives everyone a fresh session. Persisting match state was rejected as far more machinery than a browser game with 8-minute rounds is worth.
 
 Rejected: preserving the exact body (position, health, carried flag) by flipping the existing sim player between human and bot control. It is better gameplay, but it reaches into the sim's player model, the `bot-N` id convention, `humanIds`, brain keying and the determinism contract. Rejoining from a spawn point is normal for shooters and costs one function parameter (`addHuman(id, name, team?)`).
+
+## 2026-08-14: Halo feel pass -- tuning decisions that must not silently regress
+
+From the design-tournament synthesis (5 designers / 3 judges), locked by regression tests in `shared/test/combat.test.ts`:
+
+- **FOV is 90 vertical, on purpose.** three.js `PerspectiveCamera.fov` is VERTICAL; the earlier 105 was ~133 horizontal at 16:9, shrinking every target. 90 vertical is ~121 horizontal, top of Halo Infinite's band. Rejected: 100-120 "because Halo's slider says so" -- those are horizontal numbers.
+- **`PLAYER_GRAVITY` (24) is separate from `GRAVITY` (20).** Movement got a snappier arc; grenade/projectile arcs kept the old constant. Launch-pad velocities were rescaled by k = sqrt(24/20) so every pad trajectory lands where it did before (velocity x k, gravity x k^2 preserves the path). Change one, retune the other.
+- **Hit spheres 0.58/0.3 are aim forgiveness, not collision.** The movement AABB stays PLAYER_RADIUS 0.4; only shot contact tests use the wider spheres. Rejected: cursor-side bullet magnetism -- server-side generous volumes are prediction-safe and identical for everyone.
+- **Everyone spawns with the Triad Rifle; only the second slot is random.** Pure random loadouts could roll two melee weapons (no gun at all). Rejected: removing power weapons from the pool -- without map pickups shipped, that deletes them from the game.
+- **`sprint`/`slideRequest` are OPTIONAL `PlayerInput` fields.** Bots and old tests omit them and behave bit-identically (pinned by test). Required fields would have broken 6 files mechanically for two booleans.
+- **Clamber is airborne-only with a 0.6m minimum ledge** so the 0.5m guard-rail curbs (the "too easy to fall off" fix) can never be auto-mantled -- the two features are load-bearing against each other.
