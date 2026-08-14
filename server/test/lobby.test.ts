@@ -153,3 +153,55 @@ describe('Lobby: disconnect mid-match swaps in a bot', () => {
     lobby.stop()
   })
 })
+
+describe('Lobby: rematch votes from departed players expire', () => {
+  it('does not let a stale vote from a disconnected player count toward the majority', () => {
+    const lobby = new Lobby(fakeRand())
+    const a = makePlayer('a')
+    const b = makePlayer('b')
+    const c = makePlayer('c')
+    const d = makePlayer('d')
+    lobby.connect(a.id, 'Alice', a.send)
+    lobby.connect(b.id, 'Bob', b.send)
+    lobby.connect(c.id, 'Carol', c.send)
+    lobby.connect(d.id, 'Dave', d.send)
+
+    lobby.handle(a.id, { t: 'create_room' })
+    const code = a.received.find(isRoom)!.code
+    lobby.handle(b.id, { t: 'join_room', code })
+    lobby.handle(c.id, { t: 'join_room', code })
+    lobby.handle(d.id, { t: 'join_room', code })
+    lobby.handle(a.id, { t: 'start_match' })
+
+    const room = lobby.getRoom(code)!
+    // Simulate the match having ended -- the real match_end flow runs through
+    // HostedMatch's tick loop, but rematch bookkeeping is purely Lobby-side.
+    room.matchEnded = true
+
+    lobby.handle(a.id, { t: 'rematch_vote' })
+    lobby.handle(b.id, { t: 'rematch_vote' })
+    expect(room.rematchVotes.size).toBe(2)
+
+    // A and B leave. With 4 members, their 2 votes would be a majority
+    // (2*2 > 4 is false actually -- but against the post-leave membership of
+    // 2, a stale {a,b} vote set is 2*2 > 2, a false majority) unless their
+    // votes are dropped.
+    lobby.disconnect(a.id)
+    lobby.disconnect(b.id)
+
+    expect(room.rematchVotes.size).toBe(0)
+    expect(room.memberIds.size).toBe(2)
+
+    const cStartsBefore = c.received.filter(isMatchStart).length
+
+    // One of the two remaining members alone is not a majority.
+    lobby.handle(c.id, { t: 'rematch_vote' })
+    expect(c.received.filter(isMatchStart).length).toBe(cStartsBefore)
+
+    // Both remaining members (2 of 2) is a real majority.
+    lobby.handle(d.id, { t: 'rematch_vote' })
+    expect(c.received.filter(isMatchStart).length).toBe(cStartsBefore + 1)
+
+    lobby.stop()
+  })
+})

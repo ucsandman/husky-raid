@@ -38,6 +38,7 @@ export function startServer(port: number): { close(): void } {
 
   return {
     close(): void {
+      lobby.stop()
       wss.close()
       server.close()
     },

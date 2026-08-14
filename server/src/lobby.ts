@@ -188,6 +188,10 @@ export class Lobby {
       room.match.removeHuman(playerId)
     }
     room.memberIds.delete(playerId)
+    // A departed player's rematch vote no longer counts -- otherwise a
+    // stale vote from someone who left could out-live them and later tip
+    // a majority computed against the (now smaller) remaining membership.
+    room.rematchVotes.delete(playerId)
 
     if (room.memberIds.size === 0) {
       room.match?.stop()
@@ -283,6 +287,9 @@ export class Lobby {
   }
 
   private broadcastRoom(room: Room): void {
+    // team here is cosmetic/non-authoritative -- just an even split for the
+    // pre-match roster display. Real team assignment happens in
+    // HostedMatch.addHuman/addBot (pickTeam()) once the match starts.
     const roster = [...room.memberIds].map((id, i) => ({
       id,
       name: this.players.get(id)?.name ?? '',
