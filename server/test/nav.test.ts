@@ -46,6 +46,7 @@ function makeBotTestPlayer(overrides?: Partial<PlayerState>): PlayerState {
     slideCooldownRemaining: 0,
     coyoteTimeRemaining: 0,
     jumpBufferRemaining: 0,
+    scoped: false,
     ...overrides,
   }
 }

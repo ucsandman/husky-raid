@@ -40,6 +40,10 @@ Rules: cobalt/ember mean team identity, ok/warn/danger mean state. Never repurpo
 - **Status bar**: top strip, mono, with a glowing status dot (ok/warn/danger) and an error message slot; polite ARIA live region.
 - **Roster rows / tags**: panel-2 rows with a team swatch dot; `BOT` tag in mono on `--border` background.
 - **HUD** (`hud.css`): fixed, `pointer-events: none`, mono. Crosshair with recoil kick, hit markers (danger) and kill markers (warn), shield bar (cobalt) + 6 health pips (ok), weapon rows with active highlight, grenade/equipment chips, kill feed (top right), score strip (top center), flag banners (state colors), respawn overlay, Tab scoreboard.
+- **Motion tracker** (`.hud-tracker`): 132px dial, bottom center — clear of the vitals cluster (bottom-left) and loadout (bottom-right), and well below the crosshair. Ring + crosshairs on `--border`, a `--text` chevron for the player (up is where you face), and pooled blips carrying **team identity**: `--cobalt` for allies, `--ember` for enemies. Never state colors.
+- **Callout banner** (`.hud-callout`): transient single line at 22% height for the flag chain and lead changes. `--ok` when it is good news for you, `--danger` when it is not, plain `--text` otherwise. 2.2s fade, opacity-only under `prefers-reduced-motion`.
+- **Death card** (`.hud-death-card`): one dim mono line under the respawn countdown — killer, weapon, distance. Clears on revival.
+- **Medals** (`.medal`, `.medal-strip`, `style.css`): post-match only. Two-character mono glyphs on `--border`, with the full medal name in `title` and `aria-label` since a glyph alone is not self-explanatory.
 
 ## Motion
 

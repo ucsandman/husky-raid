@@ -5,6 +5,7 @@ import { Game } from './game'
 import { store, type Phase } from './state'
 import { initMenu } from './ui/menu'
 import { audioEngine, ALL_SOUND_NAMES } from './audio'
+import { announcer } from './announcer'
 import './ui/style.css'
 
 // Derived from the page's own origin (and unit-tested in client/test/net.test.ts,
@@ -29,12 +30,28 @@ if (import.meta.env.DEV) {
 // the first pointerdown anywhere (pointer-lock click on the canvas or any
 // menu button both qualify) and is a no-op on every gesture after the
 // first (init() is idempotent).
-document.addEventListener('pointerdown', () => audioEngine.init(), { once: true, capture: true })
+// The announcer rides the same gesture: speechSynthesis has the same
+// user-activation requirement as AudioContext, and init() is idempotent.
+// Measured on this machine, getVoices/speak/cancel cost under 3ms each, so
+// this adds nothing meaningful to the gesture handler.
+document.addEventListener(
+  'pointerdown',
+  () => {
+    audioEngine.init()
+    announcer.init()
+  },
+  { once: true, capture: true }
+)
 
 // Wired to settings.volume (state.ts, persisted to localStorage) --
 // unconditional so a volume-only change (which doesn't touch state.phase)
-// still reaches it, unlike the phase-gated subscriber below.
-store.subscribe((state) => audioEngine.setVolume(state.settings.volume))
+// still reaches it, unlike the phase-gated subscriber below. The announcer
+// is volume-linked here too: TTS cannot be routed through the WebAudio
+// graph, so this is the only way muting the game also mutes the voice.
+store.subscribe((state) => {
+  audioEngine.setVolume(state.settings.volume)
+  announcer.setVolume(state.settings.volume)
+})
 
 const appRoot = document.getElementById('app')
 const canvas = document.getElementById('game-canvas')
@@ -173,18 +190,27 @@ net.onMsg((msg: ServerMsg) => {
         snapshotCount: 0,
       })
       game.start(msg)
+      announcer.reset()
+      announcer.speak('match_start')
       break
     case 'snapshot':
       store.set({ snapshotCount: store.state.snapshotCount + 1 })
       game.onSnapshot(msg)
       break
-    case 'match_end':
+    case 'match_end': {
       store.set({
         phase: 'ended',
         matchEnd: { winner: msg.winner, scores: msg.scores, board: msg.board },
         rematchVoted: false,
       })
+      // A draw gets no bark: there is no Halo line for "nobody won", and
+      // inventing one would be the only unfaithful thing in the vocabulary.
+      const me = msg.board.find((r) => r.id === store.state.playerId)
+      if (msg.winner !== null && me) {
+        announcer.speak(msg.winner === me.team ? 'victory' : 'defeat')
+      }
       break
+    }
     case 'error':
       store.set({ errorMessage: msg.message })
       break

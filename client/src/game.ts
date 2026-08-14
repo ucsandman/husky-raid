@@ -1,6 +1,16 @@
 import * as THREE from 'three'
 import type { GameMap, PlayerState, ServerMsg, SnapPlayer, Vec3, WeaponId } from '@riftlane/shared'
-import { EYE_HEIGHT, HITSCAN_MAX_RANGE, MAPS, MOVE_SPEED, WEAPONS, clamp, raycast, viewDir } from '@riftlane/shared'
+import {
+  EYE_HEIGHT,
+  HITSCAN_MAX_RANGE,
+  MAPS,
+  MAX_SHIELD,
+  MOVE_SPEED,
+  WEAPONS,
+  clamp,
+  raycast,
+  viewDir,
+} from '@riftlane/shared'
 import { createScene, type SceneCtx } from './render/scene'
 import { buildMap } from './render/mapMesh'
 import { makeSoldier, updateSoldier } from './render/soldier'
@@ -13,6 +23,7 @@ import type { Net } from './net'
 import { ClientPrediction } from './predict'
 import { Hud } from './ui/hud'
 import { audioEngine, type SoundName } from './audio'
+import { announcer } from './announcer'
 import { store } from './state'
 
 type MatchStartMsg = Extract<ServerMsg, { t: 'match_start' }>
@@ -63,6 +74,9 @@ const FIRE_KICK_SEVERITY: Record<WeaponId, number> = {
   arc_blade: 0.5,
   grav_maul: 0.85,
 }
+/** Seconds between per-bullet hit sparks on the SAME target. Roughly two
+ * pulse_smg shots (rof 10) so a stream still reads as continuous. */
+const HIT_SPARK_MIN_INTERVAL = 0.06
 const FIRE_TRAUMA_BASE = 0.22
 const FIRE_RECOIL_BASE = 0.03 // radians
 
@@ -116,6 +130,9 @@ export class Game {
   private viewmodelRig: THREE.Group | null = null
   private localId: string | null = null
   private readonly prevShields = new Map<string, number>()
+  private readonly prevHealth = new Map<string, number>()
+  /** Per-target throttle for the per-bullet hit spark, see the tick() loop. */
+  private readonly lastHitSparkAt = new Map<string, number>()
   private latestSnapshot: SnapshotMsg | null = null
   private bobPhase = 0
   private footstepHalfCycle = 0 // Math.floor(bobPhase / Math.PI) as of the last footstep check
@@ -336,6 +353,7 @@ export class Game {
   private playSnapshotAudio(msg: SnapshotMsg, prevSnap: SnapshotMsg | null): void {
     const localRaw = msg.players.find((p) => p.id === this.localId)
     const listener = localRaw ? { pos: eyePos(localRaw.pos), yaw: localRaw.yaw } : undefined
+    const localTeam = localRaw ? localRaw.team : null
 
     for (const ev of msg.events) {
       if (ev.type === 'shot') {
@@ -345,11 +363,37 @@ export class Game {
         audioEngine.play('explosion', { pos: ev.pos, listener })
       } else if (ev.type === 'kill') {
         const victim = msg.players.find((p) => p.id === ev.victimId)
-        audioEngine.play('death', victim ? { pos: eyePos(victim.pos), listener } : undefined)
+        const at = victim ? { pos: eyePos(victim.pos), listener } : undefined
+        // The sim reports a rear-arc beatdown as its own weapon, so an
+        // assassination is audible to both parties without a new event.
+        audioEngine.play(ev.weapon === 'backsmack' ? 'backsmack' : 'death', at)
+
+        if (ev.killerId === this.localId && ev.killerId !== ev.victimId) {
+          const bark = announcer.onLocalKill(ev.streak)
+          if (bark === 'killing_spree' || bark === 'killing_frenzy' || bark === 'running_riot') {
+            audioEngine.play('spree')
+          }
+          if (ev.weapon === 'backsmack') announcer.speak('backsmack')
+        }
       } else if (ev.type === 'capture') {
         audioEngine.play('capture')
-      } else if (ev.type === 'flag_taken') {
-        audioEngine.play('flag_taken')
+        if (localTeam !== null) {
+          announcer.speak(ev.team === localTeam ? 'we_scored' : 'they_scored')
+        }
+      } else if (ev.type === 'flag_taken' || ev.type === 'flag_dropped' || ev.type === 'flag_returned') {
+        // `ev.team` is the flag's OWN team, so "my team's flag" means the
+        // enemy is carrying it -- the alarming case, not the good one.
+        const ours = localTeam !== null && ev.team === localTeam
+        if (ev.type === 'flag_taken') {
+          audioEngine.play('flag_taken')
+          announcer.speak(ours ? 'flag_taken_by_them' : 'flag_taken_by_us')
+        } else if (ev.type === 'flag_dropped') {
+          audioEngine.play('flag_dropped')
+          announcer.speak(ours ? 'flag_dropped_ours' : 'flag_dropped_theirs')
+        } else {
+          audioEngine.play('flag_returned')
+          announcer.speak(ours ? 'flag_returned_ours' : 'flag_returned_theirs')
+        }
       }
     }
 
@@ -363,6 +407,12 @@ export class Game {
         const opts = { pos: eyePos(p.pos), listener }
         if (p.shield <= 0 && prev.shield > 0) audioEngine.play('shield_break', opts)
         else audioEngine.play('shield_hit', opts)
+      } else if (p.id === this.localId && p.shield >= MAX_SHIELD && prev.shield < MAX_SHIELD) {
+        // The recovery half of the shield pair. Fires once, on reaching FULL
+        // -- not on every recharging snapshot, and never for other players:
+        // recharge is continuous and eight bots regenerating would turn this
+        // into ambient chiming. Non-positional, like every other local cue.
+        audioEngine.play('shield_recharge')
       }
 
       const dist = Math.hypot(p.pos.x - prev.pos.x, p.pos.y - prev.pos.y, p.pos.z - prev.pos.z)
@@ -455,15 +505,40 @@ export class Game {
         return { pos: { x: p.pos.x, y: p.pos.y + EYE_HEIGHT, z: p.pos.z }, yaw: p.yaw, pitch: p.pitch }
       })
 
-      // No shield_break SimEvent on the wire -- detect the break by diffing
-      // shield against the previous snapshot instead.
+      // No shield_break / damage SimEvent on the wire -- detect both by
+      // diffing against the previous snapshot instead. Safe to run per
+      // render frame (unlike audio, see playSnapshotAudio's comment): the
+      // prev maps are rewritten every frame, so a value that has not moved
+      // since the last frame produces no second spark.
+      const sparkNow = performance.now() / 1000
       for (const p of snap.players) {
         const prevShield = this.prevShields.get(p.id)
-        if (prevShield !== undefined && prevShield > 0 && p.shield <= 0 && p.alive) {
-          effects.spawnShieldSpark({ x: p.pos.x, y: p.pos.y + 1, z: p.pos.z })
-          if (p.id === this.localId) this.hud?.notifyShieldBreak()
+        const prevHealth = this.prevHealth.get(p.id)
+        if (p.alive) {
+          const at = { x: p.pos.x, y: p.pos.y + 1, z: p.pos.z }
+          const broke = prevShield !== undefined && prevShield > 0 && p.shield <= 0
+          if (broke) {
+            effects.spawnShieldSpark(at)
+            if (p.id === this.localId) this.hud?.notifyShieldBreak()
+            this.lastHitSparkAt.set(p.id, sparkNow)
+          } else if (
+            (prevShield !== undefined && p.shield < prevShield) ||
+            (prevHealth !== undefined && p.health < prevHealth)
+          ) {
+            // Throttled per target: the spark pool is 12 slots shared with
+            // explosion and death bursts, and an 8-player scrum of 10-rof
+            // SMGs would otherwise starve it and cost frames (60fps is a
+            // shipping requirement, not a target).
+            const last = this.lastHitSparkAt.get(p.id) ?? -Infinity
+            if (sparkNow - last >= HIT_SPARK_MIN_INTERVAL) {
+              const intoHealth = prevHealth !== undefined && p.health < prevHealth
+              effects.spawnHitSpark(at, intoHealth)
+              this.lastHitSparkAt.set(p.id, sparkNow)
+            }
+          }
         }
         this.prevShields.set(p.id, p.shield)
+        this.prevHealth.set(p.id, p.health)
       }
 
       if (localSnap) {
@@ -655,6 +730,8 @@ export class Game {
     this.viewmodelRig = null
     this.localId = null
     this.prevShields.clear()
+    this.prevHealth.clear()
+    this.lastHitSparkAt.clear()
     this.latestSnapshot = null
   }
 }

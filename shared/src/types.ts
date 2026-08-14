@@ -85,6 +85,11 @@ export interface PlayerState {
   kills: number
   deaths: number
   captures: number
+  /** Kills since this player last died -- the Halo "spree" counter, which
+   * is NOT `kills` (a match total that never resets). Optional so the test
+   * helper and any hand-built PlayerState stay valid without listing it;
+   * killPlayer treats absent as 0. Reset on death and on respawn. */
+  spree?: number
   /**
    * NOT an absolute timestamp, unlike its *Until/*At siblings above
    * (cooldownUntil, equipmentCooldownUntil, camoUntil, respawnAt,

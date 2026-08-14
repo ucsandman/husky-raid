@@ -2,7 +2,7 @@ import type { WeaponId, EquipmentId } from './types'
 import { MAX_SHIELD, MAX_HEALTH } from './constants'
 
 /** Guaranteed one-hit kill regardless of shield/health split: any value > the full pool (shield + health) always finishes the target. */
-const ONE_HIT_KILL_DAMAGE = MAX_SHIELD + MAX_HEALTH + 1
+export const ONE_HIT_KILL_DAMAGE = MAX_SHIELD + MAX_HEALTH + 1
 
 /**
  * pellets doubles as "shots fired per trigger pull": 1 for normal hitscan/
@@ -57,10 +57,12 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     name: 'Railspike',
     kind: 'hitscan',
     // Set to exactly MAX_SHIELD (70): a body hit cleanly zeroes the shield
-    // (visible/audible shield-pop) without ever touching health, so a
-    // single body shot never one-shots a full-shield target -- headshot
-    // (140, via headshotMult below) still always does. Was 100, which
-    // exceeded shield+health (100) and OHK'd on any body hit.
+    // (visible/audible shield-pop) without ever touching health. Was 100,
+    // which exceeded shield+health (100) and OHK'd on any body hit.
+    // NOTE: headshots became shield-gated (see stepFire in sim.ts), so a
+    // headshot into a FULL shield now also does 70, not 140, and no longer
+    // one-taps. The 140 only lands once the shield is already down -- which
+    // is the whole point of the two-stage kill.
     damage: 70,
     headshotMult: 2,
     rof: 0.75,

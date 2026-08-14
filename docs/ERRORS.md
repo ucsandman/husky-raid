@@ -2,6 +2,38 @@
 
 Reusable debugging lessons for RIFTLANE. Newest first, short entries.
 
+## 2026-08-14: A flaky playtest accused working code of a regression
+
+**Symptom:** After the Halo pass 2 changes, `npm run playtest` failed two
+checks -- "holding fire consumes ammo" (`23 -> 23`) and "right mouse scopes
+in" (`scope=false`). A single baseline run passed 5/5, so the changes looked
+like a clear input regression.
+
+**Root cause:** The suite itself is flaky, and had been all along. The
+movement check walks the player into the open with W+D; bots then shoot them,
+and the fire and scope checks run against a corpse. A dead player consumes no
+ammo and cannot scope, which is why the two checks always failed *together*.
+Measured on unmodified `main`: 2 of 3 runs failed identically, with
+`alive:false, shield:0` captured at check time.
+
+**What went wrong in the diagnosis, which cost more than the bug:** the
+"baseline is clean" conclusion came from ONE baseline run against THREE runs
+of the new code. With a test that fails ~2/3 of the time by chance, that is
+not a control, it is a coin flip. Two speculative fixes were made on that
+false premise (deferring `announcer.init()` out of the pointer-lock gesture)
+before anyone ran baseline more than once. Both were reverted.
+
+**Fix:** `waitAlive()` gates the fire and scope checks on the player actually
+being alive, and the fire check retries up to 3 times when the player dies
+mid-burst (dying resets the magazine, which reads as "the gun never fired").
+Pass rate went from 1/3 to 3/4.
+
+**Lesson:** before attributing a failure to your diff, run the baseline as
+many times as you ran the change. A single green control against a flaky test
+is indistinguishable from luck, and a flake that accuses working code is worse
+than one that simply fails -- it sends you rewriting things that were fine.
+
+
 ## 2026-08-14: Shipped a "Halo feel" pass whose controls were broken in three ways
 
 **Symptom:** Wes playtested the deployed build: "the gun wouldn't shoot", "you can't move up and left at the same time or up and right", "there's no scope", "utter dogshit". 121 unit tests, typecheck and build were all green, and the pass had been declared shipped.

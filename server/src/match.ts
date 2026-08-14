@@ -11,6 +11,7 @@ import {
   type SimEvent,
   type SnapPlayer,
   type SnapProjectile,
+  type MedalId,
   type Team,
 } from '@riftlane/shared'
 import { BotBrain, DEFAULT_DIFFICULTY } from './bots/brain'
@@ -25,6 +26,10 @@ const ROLE_REASSIGN_INTERVAL = 2
  * (30Hz) and SNAPSHOT_RATE (20Hz) don't divide evenly, so this is tracked
  * as elapsed sim time rather than "every Nth tick" to stay drift-free. */
 const SNAPSHOT_INTERVAL = 1 / SNAPSHOT_RATE
+
+/** Same window the client HUD uses for its on-screen multikill banner, so
+ * the medal and the banner can never disagree about the same kill chain. */
+const MULTIKILL_WINDOW = 4.5
 
 /** How long the tick loop keeps running (idle) after match_end before
  * stop() is called automatically, e.g. to leave room for a rematch vote. */
@@ -67,6 +72,14 @@ export class HostedMatch {
   private tickCount = 0
   private timeSinceSnapshot = 0
   private pendingEvents: SimEvent[] = []
+  /** Post-match medal bookkeeping. Never touches the snapshot path -- it is
+   * read once, in broadcastMatchEnd. */
+  private readonly medals = new Map<string, Partial<Record<MedalId, number>>>()
+  private readonly multikill = new Map<string, number>()
+  private readonly lastKillAt = new Map<string, number>()
+  /** The killer's streak as of their last kill, so a Killjoy can be awarded
+   * for ending it -- killPlayer zeroes the victim's own spree. */
+  private readonly spreeAtDeath = new Map<string, number>()
   private ended = false
 
   private running = false
@@ -248,6 +261,7 @@ export class HostedMatch {
 
     const events = this.sim.tick(this.simNow)
     this.pendingEvents.push(...events)
+    this.tallyMedals(events)
 
     if (events.some((e) => e.type === 'flag_taken' || e.type === 'flag_dropped' || e.type === 'flag_returned')) {
       this.recomputeRoles()
@@ -296,12 +310,69 @@ export class HostedMatch {
     }
   }
 
+  /**
+   * Accumulates end-of-match medals off the SimEvent stream this tick loop
+   * already drains. Deliberately server-side and end-of-match only: it never
+   * touches the 20Hz snapshot path, so it costs nothing per tick and cannot
+   * affect the 60fps budget.
+   *
+   * Multikill uses the same 4.5s window as the client's on-screen banner.
+   */
+  private tallyMedals(events: SimEvent[]): void {
+    for (const ev of events) {
+      if (ev.type !== 'kill') continue
+      const selfKill = ev.killerId === ev.victimId
+      if (!selfKill) {
+        if (ev.head) this.bumpMedal(ev.killerId, 'headshot')
+        if (ev.weapon === 'backsmack') this.bumpMedal(ev.killerId, 'assassination')
+
+        const streak = ev.streak ?? 0
+        if (streak === 5) this.bumpMedal(ev.killerId, 'spree')
+        if (streak === 10) this.bumpMedal(ev.killerId, 'frenzy')
+        if (streak === 15) this.bumpMedal(ev.killerId, 'riot')
+
+        const last = this.lastKillAt.get(ev.killerId) ?? -Infinity
+        const chain = this.simNow - last <= MULTIKILL_WINDOW ? (this.multikill.get(ev.killerId) ?? 1) + 1 : 1
+        this.multikill.set(ev.killerId, chain)
+        this.lastKillAt.set(ev.killerId, this.simNow)
+        if (chain === 2) this.bumpMedal(ev.killerId, 'double')
+        if (chain === 3) this.bumpMedal(ev.killerId, 'triple')
+        if (chain >= 4) this.bumpMedal(ev.killerId, 'overkill')
+
+        // Killjoy: ending someone else's spree. The victim's own spree is
+        // zeroed inside killPlayer, so it has to be read before that -- which
+        // is exactly why the streak rides the event instead of being read
+        // off PlayerState here.
+        if ((this.spreeAtDeath.get(ev.victimId) ?? 0) >= 5) {
+          this.bumpMedal(ev.killerId, 'killjoy')
+        }
+      }
+      // Dying ends the victim's multikill chain and their recorded spree.
+      this.multikill.set(ev.victimId, 0)
+      this.lastKillAt.set(ev.victimId, -Infinity)
+      this.spreeAtDeath.set(ev.victimId, 0)
+      if (!selfKill) this.spreeAtDeath.set(ev.killerId, ev.streak ?? 0)
+    }
+  }
+
+  private bumpMedal(playerId: string, medal: MedalId): void {
+    let row = this.medals.get(playerId)
+    if (!row) {
+      row = {}
+      this.medals.set(playerId, row)
+    }
+    row[medal] = (row[medal] ?? 0) + 1
+  }
+
   private broadcastMatchEnd(winner: Team | null): void {
     const board = [...this.sim.players.values()].map((p) => ({
+      id: p.id,
+      team: p.team,
       name: p.name,
       kills: p.kills,
       deaths: p.deaths,
       captures: p.captures,
+      medals: this.medals.get(p.id) ?? {},
     }))
     const msg: ServerMsg = { t: 'match_end', winner, scores: this.sim.scores, board }
     for (const id of this.humanIds) this.onSend(id, msg)

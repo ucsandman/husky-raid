@@ -29,6 +29,9 @@ const MUZZLE_COLOR = 0xffe08a
 const EXPLOSION_COLOR = 0xff8a3c
 const SHOCKWAVE_COLOR = 0xffc27a
 const SHIELD_SPARK_COLOR = 0x9fe6ff
+/** DESIGN.md's --danger. Health damage is a state, and state colours are
+ * the ok/warn/danger band -- never cobalt/ember, which mean team identity. */
+const HEALTH_SPARK_COLOR = 0xff4d5e
 const DEATH_COLOR = 0xff5f7a
 
 // syncProjectiles orients a mesh toward its velocity every frame for every
@@ -282,6 +285,18 @@ export class EffectsSystem {
 
   spawnShieldSpark(pos: Vec3): void {
     this.spawnSparks(pos, SHIELD_SPARK_COLOR, 1)
+  }
+
+  /**
+   * Small per-bullet flare, distinct from spawnShieldSpark's full break
+   * burst: smaller (0.6 endScale) so a sustained stream reads as texture
+   * rather than a strobe, and red once the shield is gone. That colour flip
+   * is the whole point -- it is how a player learns the shield/health
+   * boundary without a number, which is what makes shield-gated headshots
+   * legible instead of feeling like a broken multiplier.
+   */
+  spawnHitSpark(pos: Vec3, intoHealth: boolean): void {
+    this.spawnSparks(pos, intoHealth ? HEALTH_SPARK_COLOR : SHIELD_SPARK_COLOR, 0.6)
   }
 
   /** Drives tracers + muzzle flashes off 'shot' events, explosions off

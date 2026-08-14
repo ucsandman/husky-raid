@@ -469,3 +469,22 @@ body {
   color: var(--text-dim);
   text-transform: uppercase;
 }
+
+/* ---- post-match medals (carnage report) -------------------------------- */
+.medal-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
+.medal {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  background: var(--border);
+  color: var(--text);
+  white-space: nowrap;
+  cursor: help;
+}

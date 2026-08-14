@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import type { AABB } from '../src/types'
 import { normalize } from '../src/math'
+import { viewDir } from '../src/physics'
+import type { WeaponId } from '../src/types'
 import {
   TICK_DT,
   MAX_SHIELD,
@@ -16,6 +18,7 @@ import {
   EYE_HEIGHT,
   ADS_SPREAD_MULT,
   ADS_MOVE_MULT,
+  MELEE_DAMAGE,
 } from '../src/constants'
 import { WEAPONS, WEAPON_POOL, STARTER_WEAPON, rollLoadout } from '../src/weapons'
 import {
@@ -426,5 +429,94 @@ describe('ADS task: sim-side fire bug found in diagnosis', () => {
     )
     // The fix must not change the pre-existing damage behavior.
     expect(b.alive).toBe(false)
+  })
+})
+
+describe('Halo pass 2: shield-gated headshots', () => {
+  /** Places `b` two metres directly in front of `a` at `a`'s own spawn.
+   * World origin sits inside gutter geometry, so a test that hard-codes
+   * (0,0,0) gets its shooter shoved out by collision resolution and the
+   * ray leaves from somewhere other than where the test thinks. */
+  function faceOff(seed: number, weapon: WeaponId) {
+    const sim = new MatchSim('gutter', seed)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    a.weapons = [weapon, weapon]
+    a.activeWeapon = 0
+    a.ammo = [30, 30]
+    a.cooldownUntil = 0
+    const f = viewDir(a.yaw, 0)
+    b.pos = { x: a.pos.x + f.x * 2, y: a.pos.y, z: a.pos.z + f.z * 2 }
+    return { sim, a, b }
+  }
+
+  // The Halo two-stage kill: the headshot multiplier only pays out once the
+  // shield is already down. Before this rule a railspike headshot (70 x 2)
+  // one-tapped a full-shield player, which is why fights read as a generic
+  // TTK race instead of strip-then-finish.
+  it('does NOT apply headshotMult while the target still has shield', () => {
+    const { sim, a, b } = faceOff(601, 'railspike')
+    b.shield = MAX_SHIELD
+    b.health = MAX_HEALTH
+
+    sim.setInput('a', makeInput({ yaw: a.yaw, pitch: 0, fire: true }))
+    sim.tick(TICK_DT)
+
+    // 70 un-multiplied exactly zeroes the shield and leaves health alone.
+    expect(b.alive).toBe(true)
+    expect(b.shield).toBe(0)
+    expect(b.health).toBe(MAX_HEALTH)
+  })
+
+  // Guard, not a red test: this half already worked. It pins the other side
+  // of the rule so a future edit cannot "simplify" the gate into killing
+  // headshots outright.
+  it('still applies headshotMult once the shield is down', () => {
+    const { sim, a, b } = faceOff(601, 'pulse_smg')
+    b.shield = 0
+    b.health = MAX_HEALTH
+
+    sim.setInput('a', makeInput({ yaw: a.yaw, pitch: 0, fire: true }))
+    sim.tick(TICK_DT)
+
+    // pulse_smg 8 x2 = 16 off a stripped shield, not 8.
+    expect(b.health).toBe(MAX_HEALTH - 16)
+  })
+})
+
+describe('Halo pass 2: backsmack', () => {
+  /** `b` is placed 1.5m in front of `a` (inside MELEE_RANGE 2). `b`'s own
+   * yaw decides the case: same yaw as `a` means `b` is facing away and `a`
+   * is at its back; yaw + PI means they are face to face. */
+  function meleeSetup(seed: number, targetFacesAttacker: boolean) {
+    const sim = new MatchSim('gutter', seed)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    a.meleeCooldownUntil = 0
+    const f = viewDir(a.yaw, 0)
+    b.pos = { x: a.pos.x + f.x * 1.5, y: a.pos.y, z: a.pos.z + f.z * 1.5 }
+    b.yaw = targetFacesAttacker ? a.yaw + Math.PI : a.yaw
+    b.shield = MAX_SHIELD
+    b.health = MAX_HEALTH
+    return { sim, a, b }
+  }
+
+  it('kills outright when the attacker is inside the rear cone', () => {
+    const { sim, a, b } = meleeSetup(701, false)
+
+    sim.setInput('a', makeInput({ yaw: a.yaw, pitch: 0, melee: true }))
+    sim.tick(TICK_DT)
+
+    expect(b.alive).toBe(false)
+  })
+
+  it('is a normal beatdown from the front', () => {
+    const { sim, a, b } = meleeSetup(702, true)
+
+    sim.setInput('a', makeInput({ yaw: a.yaw, pitch: 0, melee: true }))
+    sim.tick(TICK_DT)
+
+    expect(b.alive).toBe(true)
+    expect(b.shield).toBe(MAX_SHIELD - MELEE_DAMAGE)
   })
 })

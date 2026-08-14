@@ -812,3 +812,165 @@
 .hud-scoreboard-table th + th {
   text-align: right;
 }
+
+/* ---- motion tracker ---------------------------------------------------- */
+/* Bottom centre: clear of the vitals cluster (bottom-left) and the loadout
+   (bottom-right), and far enough below the crosshair that it never competes
+   with the centre of the screen. */
+.hud-tracker {
+  position: absolute;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 132px;
+  height: 132px;
+  display: none;
+  opacity: 0.85;
+}
+
+.hud-tracker--show {
+  display: block;
+}
+
+.hud-tracker-ring {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(19, 24, 38, 0.72) 0%, rgba(10, 13, 20, 0.55) 100%);
+}
+
+.hud-tracker-cross {
+  position: absolute;
+  background: var(--border);
+  opacity: 0.55;
+}
+
+.hud-tracker-cross--v {
+  left: 50%;
+  top: 8%;
+  bottom: 8%;
+  width: 1px;
+  transform: translateX(-50%);
+}
+
+.hud-tracker-cross--h {
+  top: 50%;
+  left: 8%;
+  right: 8%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+/* The player: a forward-pointing chevron, so the dial reads as "up is where
+   I am facing" without a label. */
+.hud-tracker-self {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform: translate(-50%, -50%);
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 8px solid var(--text);
+}
+
+.hud-tracker-blips {
+  position: absolute;
+  inset: 0;
+}
+
+.hud-tracker-blip {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  /* Team identity, per DESIGN.md: cobalt/ember, never the state colours. */
+  background: var(--cobalt);
+  box-shadow: 0 0 6px currentColor;
+}
+
+.hud-tracker-blip--enemy {
+  background: var(--ember);
+}
+
+/* ---- transient callouts (flag chain, lead change) ---------------------- */
+.hud-callout {
+  position: absolute;
+  top: 22%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.3rem 0.9rem;
+  font-size: 0.9rem;
+  letter-spacing: 0.16em;
+  white-space: nowrap;
+  color: var(--text);
+  background: rgba(10, 13, 20, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  opacity: 0;
+}
+
+.hud-callout--show {
+  animation: hud-callout-fade 2.2s ease-out forwards;
+}
+
+.hud-callout--good {
+  color: var(--ok);
+  border-color: rgba(53, 208, 127, 0.45);
+}
+
+.hud-callout--bad {
+  color: var(--danger);
+  border-color: rgba(255, 77, 94, 0.45);
+}
+
+@keyframes hud-callout-fade {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  78% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* ---- death card -------------------------------------------------------- */
+.hud-death-card {
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Opacity-only fade, matching the kill banner's reduced-motion rule. */
+  .hud-callout--show {
+    animation-name: hud-callout-fade-plain;
+  }
+
+  @keyframes hud-callout-fade-plain {
+    0% {
+      opacity: 0;
+    }
+    12%,
+    78% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+}

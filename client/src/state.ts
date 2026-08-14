@@ -1,4 +1,4 @@
-import type { Team } from '@riftlane/shared'
+import type { BoardRow, Team } from '@riftlane/shared'
 
 export type Phase = 'menu' | 'lobby' | 'queue' | 'playing' | 'ended'
 
@@ -14,7 +14,7 @@ export interface RosterPlayer {
 export interface MatchEndResult {
   winner: Team | null
   scores: [number, number]
-  board: { name: string; kills: number; deaths: number; captures: number }[]
+  board: BoardRow[]
 }
 
 export interface Settings {

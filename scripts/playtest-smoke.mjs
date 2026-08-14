@@ -66,6 +66,22 @@ await ctx.addInitScript(() => {
 const page = await ctx.newPage()
 const reset = () => page.evaluate(() => { window.__probe.sent.length = 0; window.__probe.snaps.length = 0 })
 
+/**
+ * Blocks until the local player is alive, then lets one more snapshot land.
+ *
+ * Without this the suite was flaky in exactly one way: the movement check
+ * walks the player out into the open with W+D, bots shoot them, and the fire
+ * and scope checks then run against a CORPSE. A dead player consumes no ammo
+ * and cannot scope, so both checks failed together -- measured 2 of 3 runs
+ * failing on unmodified main, with `alive:false, shield:0` at check time.
+ * That looked exactly like a real input regression, which is worse than a
+ * plain flake: it accuses working code.
+ */
+const waitAlive = async () => {
+  await page.waitForFunction(() => window.__probe.snaps.at(-1)?.alive === true, null, { timeout: 20000 })
+  await page.waitForTimeout(120)
+}
+
 try {
   await page.goto(URL)
   await page.getByText('Quick Play').click()
@@ -109,23 +125,36 @@ try {
   console.log(`INFO  W+D heading ${heading}deg (expect ~45 in open lane; 0 means blocked by a wall)`)
 
   // --- the gun actually fires ------------------------------------------
-  await reset()
-  await page.waitForTimeout(400)
-  const ammoBefore = await page.evaluate(() => window.__probe.snaps.at(-1)?.ammo?.[0] ?? null)
-  await page.mouse.down()
-  await page.waitForTimeout(900)
-  await page.mouse.up()
-  await page.waitForTimeout(300)
-  const fired = await page.evaluate((before) => ({
-    before,
-    after: window.__probe.snaps.at(-1)?.ammo?.[0] ?? null,
-    onWire: window.__probe.sent.some((i) => i.fire === true),
-  }), ammoBefore)
+  // Alive-gated: see waitAlive. reset() clears the snapshot buffer, so the
+  // wait has to come first or .at(-1) reads an empty array.
+  // Retried: waitAlive only guarantees the player is alive at the START, and
+  // dying mid-burst resets the magazine, which reads as "the gun never
+  // fired". `survived` distinguishes a real input failure from a death.
+  let fired = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await waitAlive()
+    await reset()
+    await page.waitForTimeout(400)
+    const ammoBefore = await page.evaluate(() => window.__probe.snaps.at(-1)?.ammo?.[0] ?? null)
+    await page.mouse.down()
+    await page.waitForTimeout(900)
+    await page.mouse.up()
+    await page.waitForTimeout(300)
+    fired = await page.evaluate((before) => ({
+      before,
+      after: window.__probe.snaps.at(-1)?.ammo?.[0] ?? null,
+      onWire: window.__probe.sent.some((i) => i.fire === true),
+      survived: window.__probe.snaps.every((s) => s.alive),
+    }), ammoBefore)
+    if (fired.survived) break
+  }
   check('holding fire consumes ammo', fired.onWire && fired.after !== null && fired.before !== null && fired.after < fired.before,
     `ammo ${fired.before} -> ${fired.after}`)
 
   // --- aim down sights --------------------------------------------------
+  await waitAlive()
   await reset()
+  await page.waitForTimeout(150)
   await page.mouse.down({ button: 'right' })
   await page.waitForTimeout(500)
   const ads = await page.evaluate(() => ({

@@ -16,6 +16,31 @@ export type ClientMsg =
   | { t: 'input'; input: PlayerInput }
   | { t: 'rematch_vote' }
 
+/** Post-match medals. Deliberately a small, Halo-authentic set rather than a
+ * long tail: every one of these is something a player can point at and say
+ * what they did to earn it. Counts are omitted when zero, so the wire cost of
+ * a quiet match is nothing. */
+export type MedalId =
+  | 'headshot'
+  | 'assassination'
+  | 'double'
+  | 'triple'
+  | 'overkill'
+  | 'spree'
+  | 'frenzy'
+  | 'riot'
+  | 'killjoy'
+
+export interface BoardRow {
+  id: string
+  team: Team
+  name: string
+  kills: number
+  deaths: number
+  captures: number
+  medals: Partial<Record<MedalId, number>>
+}
+
 export type ServerMsg =
   /** `resumeToken` is a bearer token: it must NOT be the playerId, which is
    * broadcast to every other client in rosters and snapshots. */
@@ -45,7 +70,7 @@ export type ServerMsg =
       t: 'match_end'
       winner: Team | null
       scores: [number, number]
-      board: { name: string; kills: number; deaths: number; captures: number }[]
+      board: BoardRow[]
     }
   | { t: 'error'; message: string }
 

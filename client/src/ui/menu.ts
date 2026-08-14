@@ -1,4 +1,4 @@
-import type { ClientMsg, Team } from '@riftlane/shared'
+import type { BoardRow, ClientMsg, MedalId, Team } from '@riftlane/shared'
 import { store, saveSettings, DEFAULT_SENSITIVITY, type ClientState, type RosterPlayer } from '../state'
 import { audioEngine } from '../audio'
 
@@ -395,18 +395,70 @@ function renderEndedScreen(state: ClientState, send: Send): HTMLElement {
   return screen
 }
 
-function renderScoreboard(board: { name: string; kills: number; deaths: number; captures: number }[]): HTMLElement {
+/** Short mono glyph + full name for each medal. Glyphs stay two characters
+ * so a row of them lines up in the mono face the HUD already uses. */
+const MEDAL_LABEL: Record<MedalId, { glyph: string; name: string }> = {
+  headshot: { glyph: 'HS', name: 'Headshot' },
+  assassination: { glyph: 'AS', name: 'Assassination' },
+  double: { glyph: 'x2', name: 'Double Kill' },
+  triple: { glyph: 'x3', name: 'Triple Kill' },
+  overkill: { glyph: 'x4', name: 'Overkill' },
+  spree: { glyph: 'SP', name: 'Killing Spree' },
+  frenzy: { glyph: 'FR', name: 'Killing Frenzy' },
+  riot: { glyph: 'RR', name: 'Running Riot' },
+  killjoy: { glyph: 'KJ', name: 'Killjoy' },
+}
+
+/** Display order, rarest last, so the eye lands on the good ones. */
+const MEDAL_ORDER: MedalId[] = [
+  'headshot',
+  'assassination',
+  'double',
+  'triple',
+  'overkill',
+  'killjoy',
+  'spree',
+  'frenzy',
+  'riot',
+]
+
+function renderMedals(medals: Partial<Record<MedalId, number>>): HTMLElement {
+  const wrap = el('div', 'medal-strip')
+  for (const id of MEDAL_ORDER) {
+    const count = medals[id]
+    if (!count) continue
+    const chip = el('span', 'medal')
+    chip.textContent = count > 1 ? `${MEDAL_LABEL[id].glyph}·${count}` : MEDAL_LABEL[id].glyph
+    // The glyph alone is not self-explanatory, so the full name is always
+    // one hover (and one screen-reader read) away.
+    chip.title = count > 1 ? `${MEDAL_LABEL[id].name} x${count}` : MEDAL_LABEL[id].name
+    chip.setAttribute('aria-label', chip.title)
+    wrap.appendChild(chip)
+  }
+  return wrap
+}
+
+function renderScoreboard(board: BoardRow[]): HTMLElement {
   const table = el('table', 'scoreboard')
   const head = el('tr', 'scoreboard-head')
-  head.append(el('th', undefined, 'Name'), el('th', undefined, 'K'), el('th', undefined, 'D'), el('th', undefined, 'C'))
+  head.append(
+    el('th', undefined, 'Name'),
+    el('th', undefined, 'K'),
+    el('th', undefined, 'D'),
+    el('th', undefined, 'C'),
+    el('th', undefined, 'Medals')
+  )
   table.appendChild(head)
   for (const row of board) {
     const tr = el('tr', 'scoreboard-row')
+    const medalCell = el('td')
+    medalCell.appendChild(renderMedals(row.medals))
     tr.append(
       el('td', undefined, row.name),
       el('td', undefined, String(row.kills)),
       el('td', undefined, String(row.deaths)),
-      el('td', undefined, String(row.captures))
+      el('td', undefined, String(row.captures)),
+      medalCell
     )
     table.appendChild(tr)
   }

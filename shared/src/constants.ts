@@ -83,6 +83,14 @@ export const CLAMBER_BOOST_SPEED = 6
 // Sandbox: melee lunge speed toward the target, horizontal only, grounded only.
 export const MELEE_LUNGE_SPEED = 8
 
+// Sandbox: backsmack (Halo's rear-arc instant-kill beatdown). Full cone
+// angle measured around the target's OWN backward direction, same
+// full-angle convention as MELEE_VIEW_CONE above (both are halved at the
+// comparison site). 100 degrees is wide enough that a flank read lands
+// without demanding a pixel-perfect rear approach, and narrow enough that
+// a side-on scuffle is still a normal beatdown.
+export const BACKSMACK_VIEW_CONE = (Math.PI * 100) / 180
+
 // Combat: hit-sphere geometry (raycast + projectile contact tests share these).
 // Widened from 0.5/0.25 (Halo-style generous hit volumes -- the actual
 // collision AABB stays PLAYER_RADIUS 0.4, this constant only controls how

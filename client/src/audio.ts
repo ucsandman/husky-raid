@@ -28,6 +28,12 @@ export type SoundName =
   | 'heartbeat'
   | 'footstep'
   | 'land'
+  | 'shield_recharge'
+  | 'backsmack'
+  | 'flag_dropped'
+  | 'flag_returned'
+  | 'spree'
+  | 'lead_change'
 
 export const ALL_SOUND_NAMES: readonly SoundName[] = [
   'shot_smg',
@@ -52,6 +58,12 @@ export const ALL_SOUND_NAMES: readonly SoundName[] = [
   'heartbeat',
   'footstep',
   'land',
+  'shield_recharge',
+  'backsmack',
+  'flag_dropped',
+  'flag_returned',
+  'spree',
+  'lead_change',
 ]
 
 export interface PlayOpts {
@@ -484,6 +496,57 @@ function synth(ctx: AudioContext, name: SoundName): AudioBuffer {
           data[i] = Math.sin(2 * Math.PI * phase) * Math.exp(-t * 30) * 0.5
         }
       })
+
+    // The recovery half of the shield pair. Deliberately the inverse of
+    // shield_break: that one is noise-led and falling, this is pure-tone and
+    // rising, so "I am exposed" and "I am safe again" never sound alike.
+    case 'shield_recharge':
+      return makeBuffer(ctx, 0.22, (data, sr) => {
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          const k = Math.min(1, t / 0.22)
+          // Rise 1500->2400Hz with a soft bell envelope (no hard attack --
+          // this is a reassurance, not an alert).
+          const f = 1500 + 900 * k
+          const env = Math.sin(Math.PI * k) * 0.5
+          data[i] = (Math.sin(2 * Math.PI * f * t) * 0.7 + Math.sin(2 * Math.PI * f * 1.5 * t) * 0.3) * env
+        }
+      })
+
+    // Backsmack: low body thud plus a bright crack on top, so an assassination
+    // is audibly not a normal beatdown for either player.
+    case 'backsmack':
+      return makeBuffer(ctx, 0.3, (data, sr) => {
+        const n = noise(data.length)
+        applyLowpass(n, sr, () => 2600)
+        let phase = 0
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          const freq = 140 - 80 * Math.min(1, t / 0.12)
+          phase += freq / sr
+          const body = Math.sin(2 * Math.PI * phase) * Math.exp(-t * 12)
+          const crack = n[i] * Math.exp(-t * 38) * 0.55
+          data[i] = (body + crack) * 0.9
+        }
+      })
+
+    // Flag chain, pitched against flag_taken's A5-E5 alarm: dropped falls,
+    // returned rises, so the three states are distinguishable without looking.
+    case 'flag_dropped':
+      return makeArpeggio(ctx, [659.25, 440], 0.1, 0.03, 'square')
+
+    case 'flag_returned':
+      return makeArpeggio(ctx, [523.25, 783.99], 0.1, 0.02, 'sine')
+
+    // Spree: 3-note ascending square fanfare, above capture's sine arpeggio
+    // so a personal streak reads as sharper than a team score.
+    case 'spree':
+      return makeArpeggio(ctx, [659.25, 880, 1046.5], 0.08, 0.015, 'square')
+
+    // Lead change: two-note fall-then-rise, deliberately quiet and wide --
+    // it fires for both teams, so it must not read as a reward.
+    case 'lead_change':
+      return makeArpeggio(ctx, [392, 587.33], 0.14, 0.03, 'sine')
 
     default: {
       const exhaustive: never = name

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { HostedMatch } from '../src/match'
-import type { PlayerInput, ServerMsg } from '@riftlane/shared'
+import type { PlayerInput, ServerMsg, SimEvent } from '@riftlane/shared'
 import { TICK_DT, CAPTURES_TO_WIN } from '@riftlane/shared'
 
 function makeInput(overrides?: Partial<PlayerInput>): PlayerInput {
@@ -194,5 +194,71 @@ describe('HostedMatch: SnapPlayer HUD fields (Task 14)', () => {
       expect(Number.isInteger(p.equipmentCharges)).toBe(true)
       expect(p.equipmentCharges).toBeGreaterThanOrEqual(0)
     }
+  })
+})
+
+describe('HostedMatch: carnage report medals', () => {
+  afterEach(() => vi.useRealTimers())
+
+  /** Feeds kill events straight to the tally. tickOnce() already hands it
+   * exactly what sim.tick() returns, so what needs pinning here is the medal
+   * ladder itself, not the wiring -- and driving five real shield-gated
+   * headshot kills through a live sim would pin the bots, not the medals. */
+  function feed(match: HostedMatch, events: SimEvent[]): void {
+    ;(match as unknown as { tallyMedals(e: SimEvent[]): void }).tallyMedals(events)
+  }
+
+  function kill(killerId: string, victimId: string, extra: Partial<Extract<SimEvent, { type: 'kill' }>> = {}) {
+    return { type: 'kill' as const, killerId, victimId, weapon: 'triad_rifle', head: false, streak: 1, ...extra }
+  }
+
+  it('tallies headshot, assassination and spree onto the match_end board', () => {
+    vi.useFakeTimers()
+    const received: ServerMsg[] = []
+    const match = new HostedMatch('gutter', 7, (_id, msg) => received.push(msg), () => 2000)
+    match.addHuman('h1', 'Hunter')
+    match.addHuman('h2', 'Prey')
+    match.start()
+    vi.advanceTimersByTime(100)
+
+    feed(match, [
+      kill('h1', 'h2', { streak: 1, head: true }),
+      kill('h1', 'h2', { streak: 2, weapon: 'backsmack' }),
+      kill('h1', 'h2', { streak: 5 }),
+    ])
+
+    match.sim.scores = [CAPTURES_TO_WIN, 0]
+    vi.advanceTimersByTime(50)
+
+    const row = received.find(isMatchEnd)!.board.find((r) => r.id === 'h1')!
+    expect(row.medals.headshot).toBe(1)
+    expect(row.medals.assassination).toBe(1)
+    expect(row.medals.spree).toBe(1)
+    expect(row.team).toBe(match.sim.players.get('h1')!.team)
+  })
+
+  it('awards a killjoy for ending a spree, and never credits a self-kill', () => {
+    vi.useFakeTimers()
+    const received: ServerMsg[] = []
+    const match = new HostedMatch('gutter', 8, (_id, msg) => received.push(msg), () => 2000)
+    match.addHuman('h1', 'Hunter')
+    match.addHuman('h2', 'Prey')
+    match.start()
+    vi.advanceTimersByTime(100)
+
+    // h2 builds a 5-kill spree, then h1 ends it -> Killjoy for h1.
+    feed(match, [kill('h2', 'h1', { streak: 5 })])
+    feed(match, [kill('h1', 'h2', { streak: 1 })])
+    // A fall death (killer === victim) must earn nothing at all.
+    feed(match, [kill('h1', 'h1', { streak: 0, weapon: 'fall' })])
+
+    match.sim.scores = [CAPTURES_TO_WIN, 0]
+    vi.advanceTimersByTime(50)
+
+    const board = received.find(isMatchEnd)!.board
+    const hunter = board.find((r) => r.id === 'h1')!
+    expect(hunter.medals.killjoy).toBe(1)
+    expect(hunter.medals.spree).toBeUndefined()
+    expect(board.find((r) => r.id === 'h2')!.medals.spree).toBe(1)
   })
 })

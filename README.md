@@ -1,6 +1,8 @@
 # RIFTLANE
 
-RIFTLANE is a browser-based 8-player capture-the-flag arena shooter, built as an original IP inspired by Husky Raid. Two teams of four fight across a small map, grappling and repulsor-jumping around cover, stealing the enemy flag, and capturing it at their own base. Movement is Halo-style: sprint, slide, clamber onto ledges mid-air, and forgiving jump timing. Everyone spawns with a Triad Rifle plus one random weapon from the pool. Carrying the flag costs you your gun -- carriers move at full speed but can only melee. Matches end at 3 captures or when the clock runs out. Any empty human slots are filled by server-side bots, so a match can start (and keep running through a disconnect) with as few as one human player.
+RIFTLANE is a browser-based 8-player capture-the-flag arena shooter, built as an original IP inspired by Husky Raid. Two teams of four fight across a small map, grappling and repulsor-jumping around cover, stealing the enemy flag, and capturing it at their own base. Movement is Halo-style: sprint, slide, clamber onto ledges mid-air, and forgiving jump timing. Everyone spawns with a Triad Rifle plus one random weapon from the pool. Carrying the flag costs you your gun -- carriers move at full speed but can only melee. Matches end at 3 captures or when the clock runs out.
+
+Fights are the Halo two-stage kill: strip the shield first, then finish. **Headshot multipliers only pay out once a target's shield is down**, so a fight is a rhythm rather than a race, and sparks tell you which stage you are in -- blue while you are chipping the shield, red once you are into health. A beatdown landed inside a target's own rear arc kills outright. A motion tracker paints anyone moving nearby, an announcer calls the match, and the post-game carnage report hands out medals. Any empty human slots are filled by server-side bots, so a match can start (and keep running through a disconnect) with as few as one human player.
 
 ## Controls
 
@@ -91,6 +93,8 @@ npm run playtest  # real browser, real match: are the controls actually alive?
 ```
 
 `npm run playtest` needs the server already running (`npm run start`, or set `RIFTLANE_URL`) and Playwright's Chromium (`npx playwright install chromium`). It joins a real match and checks the things unit tests structurally cannot see: that keys and mouse buttons reach the server, that holding fire consumes ammo, that right click scopes in, that losing pointer lock shows a resume prompt instead of silently killing every input, and that the keyboard still works once lock is gone. Every one of those was broken at some point while the unit suite was fully green.
+
+It drives a live match against real bots, so it is not perfectly deterministic. The fire and scope checks wait for the player to be alive and retry a death mid-burst (see `waitAlive` in the script, and the 2026-08-14 entry in `docs/ERRORS.md` for why that matters). An occasional single-check failure is the test being noisy, not proof of a regression -- re-run it, and compare against the same number of runs on a clean tree before believing it.
 
 The integration suite (`server/test/integration.test.ts`) boots a real server on an ephemeral port and drives it with real WebSocket clients, proving the snapshot stream, input ack, mid-match disconnect/bot-swap, and clean shutdown all work over real sockets. It doesn't exercise captures or the rest of match logic -- that's covered by the sim unit tests plus manual playtest.
 

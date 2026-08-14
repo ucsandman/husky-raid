@@ -12,7 +12,7 @@ import {
   checkSwarmPop,
   type Projectile,
 } from './combat'
-import { WEAPONS, rollLoadout } from './weapons'
+import { WEAPONS, rollLoadout, ONE_HIT_KILL_DAMAGE } from './weapons'
 import { mulberry32 } from './rng'
 import {
   TICK_DT,
@@ -55,6 +55,7 @@ import {
   RELOAD_TIME,
   HOMING_CONE_ANGLE,
   MELEE_LUNGE_SPEED,
+  BACKSMACK_VIEW_CONE,
   ADS_SPREAD_MULT,
 } from './constants'
 
@@ -66,7 +67,12 @@ export interface FlagState {
 }
 
 export type SimEvent =
-  | { type: 'kill'; killerId: string; victimId: string; weapon: string; head: boolean }
+  /** `streak` is the killer's kills-since-last-death AFTER this kill, so the
+   * client can bark sprees without keeping its own tally (which prediction
+   * would fabricate). Optional, matching the sprint/slideRequest precedent:
+   * hand-built events in older tests omit it and stay valid. 0 for a
+   * self-kill, which is never a spree. */
+  | { type: 'kill'; killerId: string; victimId: string; weapon: string; head: boolean; streak?: number }
   | { type: 'capture'; playerId: string; team: Team }
   | { type: 'flag_taken' | 'flag_dropped' | 'flag_returned'; team: Team; playerId?: string }
   | { type: 'shot'; playerId: string; weapon: WeaponId }
@@ -371,11 +377,20 @@ export class MatchSim {
     victim.deaths += 1
     victim.respawnAt = now + RESPAWN_DELAY
     const finalKillerId = killerId ?? victim.id
+    let streak = 0
     if (killerId && killerId !== victim.id) {
       const killer = this.players.get(killerId)
-      if (killer) killer.kills += 1
+      if (killer) {
+        killer.kills += 1
+        streak = (killer.spree ?? 0) + 1
+        killer.spree = streak
+      }
     }
-    events.push({ type: 'kill', killerId: finalKillerId, victimId: victim.id, weapon, head })
+    // The victim's own spree ends here, in the same function that starts
+    // one -- otherwise a spree only ever ends at respawn and a player who
+    // stays dead keeps a live counter.
+    victim.spree = 0
+    events.push({ type: 'kill', killerId: finalKillerId, victimId: victim.id, weapon, head, streak })
     if (victim.carryingFlag !== null) {
       const flagTeam = victim.carryingFlag
       victim.carryingFlag = null
@@ -536,11 +551,36 @@ function doMeleeAttack(
       attacker.vel = { x: (d.x / h) * MELEE_LUNGE_SPEED, y: attacker.vel.y, z: (d.z / h) * MELEE_LUNGE_SPEED }
     }
   }
+  // Backsmack: a beatdown landed inside the target's own rear arc kills
+  // outright, as in Halo. Measured against the TARGET's facing, not the
+  // attacker's -- a target that turns to face its attacker in time has
+  // defended itself, which is what makes the flank a read rather than a
+  // damage bonus. Power-melee weapons already deal ONE_HIT_KILL_DAMAGE, so
+  // this is a no-op for them rather than a special case.
+  const toAttacker = sub(attacker.pos, best.pos)
+  const hAttacker = Math.hypot(toAttacker.x, toAttacker.z)
+  let effectiveDamage = damage
+  let effectiveWeapon = weapon
+  if (hAttacker > 1e-6) {
+    const targetForward = viewDir(best.yaw, 0)
+    const behindness = -dot(targetForward, {
+      x: toAttacker.x / hAttacker,
+      y: 0,
+      z: toAttacker.z / hAttacker,
+    })
+    if (behindness >= Math.cos(BACKSMACK_VIEW_CONE / 2)) {
+      effectiveDamage = ONE_HIT_KILL_DAMAGE
+      // Reported as its own weapon so the kill feed, the kill sound and the
+      // announcer can all tell a backsmack from a normal beatdown without a
+      // new SimEvent field. `weapon` on the kill event is already `string`.
+      effectiveWeapon = 'backsmack'
+    }
+  }
   // best was filtered to target.alive above, so applyDamage always starts
   // from a live target -- no need to snapshot "was alive" before checking.
-  applyDamage(best, damage, now)
+  applyDamage(best, effectiveDamage, now)
   if (!best.alive) {
-    sim.killPlayer(best, now, attacker.id, weapon, { ...best.pos }, events)
+    sim.killPlayer(best, now, attacker.id, effectiveWeapon, { ...best.pos }, events)
   }
 }
 
@@ -628,7 +668,11 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
       if (hit.kind === 'player' && hit.playerId) {
         const target = sim.players.get(hit.playerId)
         if (target && target.alive) {
-          const mult = hit.head ? weapon.headshotMult : 1
+          // Halo's two-stage kill: the headshot multiplier only pays out
+          // once the shield is already down. Read before applyDamage, so a
+          // multi-pellet burst can strip the shield with pellet 1 and have
+          // pellet 2 land the multiplied finisher inside one trigger pull.
+          const mult = hit.head && target.shield <= 0 ? weapon.headshotMult : 1
           applyDamage(target, weapon.damage * mult, now)
           if (!target.alive) {
             sim.killPlayer(target, now, p.id, weaponId, { ...target.pos }, events, !!hit.head)

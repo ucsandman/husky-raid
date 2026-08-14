@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { MatchSim } from '../src/sim'
+import { MatchSim, type SimEvent } from '../src/sim'
 import { mulberry32 } from '../src/rng'
 import { rollLoadout, WEAPONS } from '../src/weapons'
 import { MAPS } from '../src/maps'
@@ -451,6 +451,12 @@ describe('MatchSim: kill event head flag (task 7)', () => {
     a.yaw = 0
     a.pitch = 0
     b.pos = { x: 0, y: 0, z: -15 }
+    // Shield stripped first, same as the body-shot sibling below. Since
+    // headshots became shield-gated, a headshot into a full shield does
+    // 70 (not 140) and no longer kills -- so a full-shield target would
+    // emit no kill event at all and this test would be asserting the
+    // one-tap, not the head flag it is named for.
+    b.shield = 0
 
     sim.setInput('a', makeInput({ yaw: 0, pitch: 0, fire: true }))
     const events = sim.tick(TICK_DT)
@@ -480,5 +486,39 @@ describe('MatchSim: kill event head flag (task 7)', () => {
     const kill = events.find((e) => e.type === 'kill' && e.victimId === 'b')
     expect(kill).toBeDefined()
     expect((kill as { head: boolean }).head).toBe(false)
+  })
+})
+
+describe('Halo pass 2: per-life kill streak on the kill event', () => {
+  it('counts up per kill and resets when the killer themselves dies', () => {
+    const sim = new MatchSim('gutter', 801)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    const events: SimEvent[] = []
+
+    sim.killPlayer(b, 1, 'a', 'test', { ...b.pos }, events)
+    b.alive = true
+    sim.killPlayer(b, 2, 'a', 'test', { ...b.pos }, events)
+
+    expect(events[0].type === 'kill' && events[0].streak).toBe(1)
+    expect(events[1].type === 'kill' && events[1].streak).toBe(2)
+
+    // a dies, so a's spree is over.
+    sim.killPlayer(a, 3, 'b', 'test', { ...a.pos }, events)
+    a.alive = true
+    b.alive = true
+    sim.killPlayer(b, 4, 'a', 'test', { ...b.pos }, events)
+
+    expect(events[3].type === 'kill' && events[3].streak).toBe(1)
+  })
+
+  it('does not credit a spree for a self-kill', () => {
+    const sim = new MatchSim('gutter', 802)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const events: SimEvent[] = []
+
+    sim.killPlayer(a, 1, null, 'fall', { ...a.pos }, events)
+
+    expect(events[0].type === 'kill' && events[0].streak).toBe(0)
   })
 })

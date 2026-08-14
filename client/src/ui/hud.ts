@@ -1,6 +1,8 @@
 import type { EquipmentId, FlagState, ServerMsg, SnapPlayer, Team, WeaponId } from '@riftlane/shared'
 import { MAX_HEALTH, MAX_SHIELD, RESPAWN_DELAY, WEAPONS, clamp } from '@riftlane/shared'
 import { audioEngine } from '../audio'
+import { announcer } from '../announcer'
+import { forwardXZ, rightXZ } from '../render/feel'
 import './hud.css'
 
 type SnapshotMsg = Extract<ServerMsg, { t: 'snapshot' }>
@@ -15,6 +17,13 @@ const KILLFEED_MAX = 8
 const KILL_BANNER_MS = 1400
 const KILL_STREAK_WINDOW = 4.5 // seconds; resets the streak counter if exceeded between kills
 const KILL_STREAK_LABEL: Record<number, string> = { 2: 'DOUBLE ELIMINATION', 3: 'TRIPLE ELIMINATION' }
+const CALLOUT_MS = 2200
+/** Motion tracker radius in metres, and the horizontal speed below which a
+ * player stops painting. No crouch state exists in the sim, so speed is the
+ * only gate -- a player who walks a corner slowly is invisible, which is
+ * close enough to Halo's crouch rule to play the same way. */
+const TRACKER_RANGE = 25
+const TRACKER_MIN_SPEED = 2.2
 const DAMAGE_PULSE_MS = 450
 const LOW_HEALTH_FRAC = 0.25
 const HEARTBEAT_INTERVAL_MAX = 1.1 // seconds, at exactly the 25% threshold
@@ -119,6 +128,14 @@ export class Hud {
   private readonly enemyFlagBanner: HTMLDivElement
   private readonly respawnOverlay: HTMLDivElement
   private readonly respawnCount: HTMLDivElement
+  private readonly deathCard: HTMLDivElement
+  private readonly tracker: HTMLDivElement
+  private readonly trackerBlips: HTMLDivElement
+  private readonly trackerSelf: HTMLDivElement
+  private readonly calloutBanner: HTMLDivElement
+  /** Pooled tracker blips, grown on demand and hidden when unused -- the
+   * tracker runs every frame, so it must never allocate per frame. */
+  private readonly trackerBlipPool: HTMLDivElement[] = []
   private readonly inputPausedOverlay: HTMLDivElement
   private readonly scoreboard: HTMLDivElement
   private readonly scoreboardCobaltBody: HTMLTableSectionElement
@@ -128,6 +145,7 @@ export class Hud {
   private readonly tally = new Map<string, TallyEntry>()
   private readonly pendingTimeouts = new Set<ReturnType<typeof setTimeout>>()
 
+  private prevScores: [number, number] | null = null
   private lastProcessedTick: number | null = null
   private prevAlive = true
   private respawnRemaining = 0
@@ -207,8 +225,23 @@ export class Hud {
     const respawnTitle = el('div', 'hud-respawn-title')
     respawnTitle.textContent = 'ELIMINATED'
     this.respawnCount = el('div', 'hud-respawn-count')
-    this.respawnOverlay.append(respawnTitle, this.respawnCount)
+    this.deathCard = el('div', 'hud-death-card')
+    this.respawnOverlay.append(respawnTitle, this.respawnCount, this.deathCard)
     this.root.appendChild(this.respawnOverlay)
+
+    // Motion tracker: bottom-centre, clear of the vitals cluster on the left
+    // and the loadout on the right, so it never covers the crosshair.
+    this.tracker = el('div', 'hud-tracker')
+    const trackerRing = el('div', 'hud-tracker-ring')
+    const trackerSweepA = el('div', 'hud-tracker-cross hud-tracker-cross--v')
+    const trackerSweepB = el('div', 'hud-tracker-cross hud-tracker-cross--h')
+    this.trackerSelf = el('div', 'hud-tracker-self')
+    this.trackerBlips = el('div', 'hud-tracker-blips')
+    this.tracker.append(trackerRing, trackerSweepA, trackerSweepB, this.trackerBlips, this.trackerSelf)
+    this.root.appendChild(this.tracker)
+
+    this.calloutBanner = el('div', 'hud-callout')
+    this.root.appendChild(this.calloutBanner)
 
     this.inputPausedOverlay = el('div', 'hud-input-paused')
     const pausedTitle = el('div', 'hud-input-paused-title')
@@ -256,9 +289,11 @@ export class Hud {
       this.updateFlags(localSnap, snap.flags)
       this.updateRespawn(localSnap, dt)
       this.updateLowHealthCue(localSnap, dt)
+      this.updateTracker(localSnap, snap.players)
       this.root.classList.toggle('hud--camo', localSnap.camo)
     } else {
       this.lowHealthVignette.style.opacity = '0'
+      this.tracker.classList.remove('hud-tracker--show')
     }
 
     if (this.killStreakRemaining > 0) {
@@ -266,7 +301,7 @@ export class Hud {
       if (this.killStreakRemaining <= 0) this.killStreakCount = 0
     }
 
-    this.updateScoreStrip(snap.scores, snap.timeLeft)
+    this.updateScoreStrip(snap.scores, snap.timeLeft, localSnap ? localSnap.team : null)
     if (scoreboardHeld) this.updateScoreboard(snap.players)
   }
 
@@ -388,8 +423,31 @@ export class Hud {
           const victimName = this.nameCache.get(ev.victimId) ?? '???'
           this.showKillBanner(victimName, ev.head)
         }
+        if (ev.victimId === localId) {
+          const local = players.find((p) => p.id === localId)
+          if (local) {
+            if (isSelfKill) this.deathCard.textContent = 'NO ONE TO BLAME'
+            else this.showDeathCard(ev.killerId, ev.weapon, players, local)
+          }
+        }
       } else if (ev.type === 'capture') {
         this.bumpTally(ev.playerId, 'captures', players)
+      } else if (ev.type === 'flag_taken' || ev.type === 'flag_dropped' || ev.type === 'flag_returned') {
+        // `ev.team` is the flag's OWN team. So a flag_taken on MY team's flag
+        // is the enemy stealing mine -- the bad case. Six variants, because
+        // "flag taken" means opposite things depending on whose it is, and a
+        // single neutral string is what makes CTF illegible.
+        const localPlayer = players.find((p) => p.id === localId)
+        if (localPlayer) {
+          const ours = ev.team === localPlayer.team
+          if (ev.type === 'flag_taken') {
+            this.showCallout(ours ? 'YOUR FLAG HAS BEEN TAKEN' : 'ENEMY FLAG TAKEN', ours ? 'bad' : 'good')
+          } else if (ev.type === 'flag_dropped') {
+            this.showCallout(ours ? 'YOUR FLAG WAS DROPPED' : 'ENEMY FLAG DROPPED', ours ? 'bad' : 'neutral')
+          } else {
+            this.showCallout(ours ? 'YOUR FLAG IS SECURE' : 'ENEMY FLAG RETURNED', ours ? 'good' : 'bad')
+          }
+        }
       } else if (ev.type === 'shot' && ev.playerId === localId) {
         this.crosshairKickT = 0
       }
@@ -460,6 +518,9 @@ export class Hud {
   private showKillBanner(victimName: string, head: boolean): void {
     this.killStreakCount += 1
     this.killStreakRemaining = KILL_STREAK_WINDOW
+    // The banner's counter is the single source of truth for multikills; the
+    // announcer reads it rather than running a second window of its own.
+    announcer.multikill(this.killStreakCount)
 
     this.killBannerTitle.textContent = `ELIMINATED ${victimName}${head ? ' — HEADSHOT' : ''}`
     this.killBannerStreak.textContent = KILL_STREAK_LABEL[this.killStreakCount] ?? (this.killStreakCount >= 4 ? `${this.killStreakCount}x ELIMINATION STREAK` : '')
@@ -590,6 +651,9 @@ export class Hud {
     } else {
       this.respawnOverlay.classList.remove('hud-respawn--show')
       this.respawnRemaining = 0
+      // Cleared on revival so the next death can never flash the previous
+      // killer's name in the frame before its own kill event arrives.
+      this.deathCard.textContent = ''
     }
     this.prevAlive = local.alive
   }
@@ -615,13 +679,111 @@ export class Hud {
     }
   }
 
-  private updateScoreStrip(scores: [number, number], timeLeft: number): void {
+  private updateScoreStrip(scores: [number, number], timeLeft: number, localTeam: Team | null): void {
     this.scoreCobalt.textContent = String(scores[0])
     this.scoreEmber.textContent = String(scores[1])
     const clamped = Math.max(0, Math.ceil(timeLeft))
     const mins = Math.floor(clamped / 60)
     const secs = clamped % 60
     this.timer.textContent = `${mins}:${String(secs).padStart(2, '0')}`
+
+    // Lead change: pure client-side diffing of a score the server already
+    // sends. No protocol cost, and it gives the scoreline a pulse instead of
+    // two numbers that quietly tick over.
+    if (this.prevScores && localTeam !== null) {
+      const leadOf = (s: [number, number]): Team | null =>
+        s[0] === s[1] ? null : s[0] > s[1] ? 0 : 1
+      const before = leadOf(this.prevScores)
+      const after = leadOf(scores)
+      if (before !== after && after !== null) {
+        const mine = after === localTeam
+        this.showCallout(mine ? 'YOU HAVE TAKEN THE LEAD' : `${TEAM_NAME[after].toUpperCase()} TAKES THE LEAD`, mine ? 'good' : 'bad')
+        audioEngine.play('lead_change')
+        announcer.speak(mine ? 'lead_taken' : 'lead_lost')
+      }
+    }
+    this.prevScores = [scores[0], scores[1]]
+  }
+
+  /**
+   * Motion tracker. Speed-gated, as in Halo: a player who stops or walks
+   * slowly drops off it, which is what turns holding still into a tactic
+   * rather than a waste of time.
+   *
+   * Reads only fields the snapshot already carries for every player with no
+   * line-of-sight filter (see match.ts), so this is pure presentation -- no
+   * protocol change, no sim change. `camo` hides a player outright.
+   */
+  private updateTracker(local: SnapPlayer, players: SnapPlayer[]): void {
+    this.tracker.classList.toggle('hud-tracker--show', local.alive)
+    if (!local.alive) return
+
+    const fwd = forwardXZ(local.yaw)
+    const right = rightXZ(local.yaw)
+    let used = 0
+
+    for (const p of players) {
+      if (p.id === local.id || !p.alive || p.camo) continue
+      if (Math.hypot(p.vel.x, p.vel.z) < TRACKER_MIN_SPEED) continue
+      const dx = p.pos.x - local.pos.x
+      const dz = p.pos.z - local.pos.z
+      if (Math.hypot(dx, dz) > TRACKER_RANGE) continue
+
+      // Yaw-relative: forward is up on the dial, right is right.
+      const relRight = dx * right.x + dz * right.z
+      const relFwd = dx * fwd.x + dz * fwd.z
+
+      const blip = this.trackerBlip(used++)
+      blip.style.left = `${50 + (relRight / TRACKER_RANGE) * 50}%`
+      blip.style.top = `${50 - (relFwd / TRACKER_RANGE) * 50}%`
+      blip.classList.toggle('hud-tracker-blip--enemy', p.team !== local.team)
+      blip.style.display = ''
+    }
+
+    for (let i = used; i < this.trackerBlipPool.length; i++) {
+      this.trackerBlipPool[i].style.display = 'none'
+    }
+  }
+
+  private trackerBlip(i: number): HTMLDivElement {
+    let blip = this.trackerBlipPool[i]
+    if (!blip) {
+      blip = el('div', 'hud-tracker-blip')
+      this.trackerBlipPool.push(blip)
+      this.trackerBlips.appendChild(blip)
+    }
+    return blip
+  }
+
+  /** Transient centre-screen line, used by the flag chain and lead changes.
+   * Edge-triggered: the persistent flag icon banners stay level-triggered in
+   * updateFlags, so the two never fight over the same state. */
+  private showCallout(text: string, tone: 'good' | 'bad' | 'neutral'): void {
+    this.calloutBanner.textContent = text
+    this.calloutBanner.classList.remove('hud-callout--good', 'hud-callout--bad')
+    if (tone !== 'neutral') this.calloutBanner.classList.add(`hud-callout--${tone}`)
+    this.calloutBanner.classList.remove('hud-callout--show')
+    void this.calloutBanner.offsetWidth // restart the animation on a rapid second callout
+    this.calloutBanner.classList.add('hud-callout--show')
+    const t = setTimeout(() => {
+      this.calloutBanner.classList.remove('hud-callout--show')
+      this.pendingTimeouts.delete(t)
+    }, CALLOUT_MS)
+    this.pendingTimeouts.add(t)
+  }
+
+  /** Who killed you, with what, and how far away -- rendered into the
+   * respawn overlay, the one moment the player is guaranteed to be reading
+   * the screen. Matters most against bots, who are otherwise anonymous. */
+  private showDeathCard(killerId: string, weapon: string, players: SnapPlayer[], local: SnapPlayer): void {
+    const killerName = this.nameCache.get(killerId) ?? '???'
+    const killer = players.find((p) => p.id === killerId)
+    const dist = killer
+      ? Math.round(Math.hypot(killer.pos.x - local.pos.x, killer.pos.y - local.pos.y, killer.pos.z - local.pos.z))
+      : null
+    const parts = [weaponDisplayName(weapon)]
+    if (dist !== null) parts.push(`${dist}m`)
+    this.deathCard.textContent = `${killerName} — ${parts.join(' · ')}`
   }
 
   private updateScoreboard(players: SnapPlayer[]): void {

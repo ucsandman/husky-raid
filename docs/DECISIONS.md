@@ -129,3 +129,69 @@ Both changes came out of measuring 5 seeded 8-bot matches rather than guessing a
 
 - **`FLAG_CARRIER_SPEED_MULT` 0.9 -> 1.0.** With the penalty, first capture landed as late as 257s and 2 of 5 seeded matches never reached a decisive score inside the full 480s clock. At 1.0, first capture lands within 10-14s and matches resolve in 28-224s, with the kill rate unchanged at ~29/min -- so the fighting was never the problem, the scoring was. Carriers already pay for the flag by being unable to shoot at all, which is also how Halo handles it. Rejected: shortening `MATCH_TIME` instead, which would have hidden the stall rather than fixed it.
 - **Melee runs on its own `meleeCooldownUntil`, checked before the weapon cooldown.** It used to share `cooldownUntil` with weapon fire, so an empty magazine left the player with no action whatsoever for the whole `RELOAD_TIME` lockout. Melee is now always available on its own 0.8s cadence, including while reloading and while carrying the flag. This makes flag carriers meaningfully better duelists, which is intended.
+
+## 2026-08-14: Halo pass 2 -- the shield fight made legible, plus a voice
+
+Ten changes from the second design tournament (7 designers / adversarial
+verifier / 3 judges). The tournament's own verdict was that RIFTLANE already
+*simulates* a Halo fight but does not *report* one, so most of this pass is
+readout, not systems.
+
+- **Headshots are shield-gated.** `stepFire` applies `headshotMult` only when
+  `target.shield <= 0`, read before `applyDamage` so a multi-pellet burst can
+  strip with pellet 1 and land the multiplied finisher with pellet 2 in one
+  trigger pull. This is the two-stage strip-then-finish kill that separates
+  Halo from a flat TTK race. **Consequence: railspike no longer one-taps a
+  full-shield player** (70, not 140) -- the comment in `weapons.ts` that said
+  it "still always does" was updated, and `sim.test.ts`'s head-flag test now
+  strips the shield first, because a full-shield headshot emits no kill event
+  at all to assert against.
+- **The per-hit spark is the other half of that rule, not a separate feature.**
+  Ship them together. The gate alone reads as "my headshots broke"; the spark
+  (icy blue into shield, `--danger` red into health) is what teaches the
+  boundary without a number. Throttled to 60ms per target because the spark
+  pool is 12 slots shared with explosions and death bursts.
+- **The shield recharge chime lives in `playSnapshotAudio`, NOT the `tick()`
+  prevShields loop the design brief pointed at.** `tick()` runs ~3x per
+  snapshot, so a sound fired there triple-fires; the file's own comment says
+  exactly that. It is gated to the local player and to reaching FULL shield,
+  or eight regenerating bots turn it into ambient chiming.
+- **Backsmack is measured against the TARGET's facing, not the attacker's.**
+  A 100-degree rear cone (`BACKSMACK_VIEW_CONE`, full-angle convention like
+  `MELEE_VIEW_CONE`) substitutes `ONE_HIT_KILL_DAMAGE`, and the kill is
+  reported as weapon `'backsmack'` so the feed, the sound and the announcer
+  can all distinguish it with no new SimEvent field. Measuring off the target
+  means a player who turns in time has defended themselves, which makes the
+  flank a read rather than a damage bonus.
+- **`spree` is an OPTIONAL PlayerState field and `streak` an OPTIONAL kill-event
+  field**, following the `sprint`/`slideRequest` precedent so hand-built states
+  and older tests stay valid. The victim's spree is zeroed inside `killPlayer`
+  itself -- otherwise a spree only ends at respawn and a player who stays dead
+  keeps a live counter.
+- **The HUD's multikill counter is the single source of truth.** `hud.ts`
+  already ran a 4.5s window for its on-screen banner; the announcer reads that
+  instead of keeping its own, because two independent windows eventually
+  disagree about the same kill. `match.ts` reuses the same 4.5s constant for
+  medals for the same reason.
+- **The announcer is Web Speech API, and that is a fallback, not a preference.**
+  Real VO was the better answer; the ElevenLabs probe returned
+  `ELEVENLABS_API_KEY=MISSING` in both the environment and `.secrets.env`, so
+  it is blocked, not skipped. Every line lives in the `BARKS` table with an
+  unused `src` field: fill those in and teach `speak()` to prefer `src`, and no
+  call site changes. It is volume-linked to `settings.volume` because TTS
+  cannot be routed through the WebAudio graph and would otherwise ignore mute.
+- **Medals are server-side and end-of-match only.** The tally rides the
+  SimEvent stream `tickOnce` already drains and is read once in
+  `broadcastMatchEnd`, so it never touches the 20Hz snapshot path or the 60fps
+  budget. `BoardRow` gained `id` and `team` (the client could not tell which
+  row was yours, which also blocked the victory/defeat bark).
+- **The motion tracker is speed-gated only.** There is no crouch state in the
+  sim, so a slow walk is the only way to drop off it. It is a pure client read
+  of data `match.ts` already broadcasts to everyone with no LOS filter -- no
+  protocol change. Blips use cobalt/ember (team identity), never the state
+  colours, per DESIGN.md.
+- **Rejected: the MARK ping and a grenade danger indicator.** MARK is the most
+  protocol-expensive idea available for a signal bots cannot read, in a lobby
+  that is usually one human and seven bots. The screen-edge grenade warning is
+  a Call of Duty convention; Halo deliberately makes grenade danger something
+  you read from the clink and the arc.
