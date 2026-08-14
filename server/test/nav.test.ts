@@ -32,6 +32,7 @@ function makeBotTestPlayer(overrides?: Partial<PlayerState>): PlayerState {
     equipmentCharges: 0,
     equipmentCooldownUntil: 0,
     swapCooldownUntil: 0,
+    meleeCooldownUntil: 0,
     camoUntil: 0,
     carryingFlag: null,
     stuckDarts: 0,

@@ -245,6 +245,34 @@ describe('MatchSim: an empty magazine reads as empty', () => {
     sim.tick(now)
     expect(a.ammo[0]).toBe(WEAPONS.sidearm.magSize)
   })
+
+  it('leaves melee available during the reload lockout', () => {
+    const sim = new MatchSim('gutter', 11)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    a.weapons = ['sidearm', 'sidearm']
+    a.ammo = [1, 12]
+    a.activeWeapon = 0
+    // Put B in melee range, directly in front of A (yaw 0 faces +z).
+    a.pos = { x: 0, y: 0, z: -15 }
+    b.pos = { x: 0, y: 0, z: -14 }
+    a.yaw = 0
+
+    sim.setInput('a', makeInput({ yaw: 0, fire: true }))
+    let now = TICK_DT
+    sim.tick(now)
+    expect(a.ammo[0]).toBe(0) // dry, and locked out of firing
+
+    // Mid-reload the gun is dead, but a melee must still land -- being unable
+    // to do anything at all for RELOAD_TIME is what made an empty mag feel
+    // like a broken character rather than a reload.
+    const shieldBefore = b.shield
+    now += RELOAD_TIME / 2
+    sim.setInput('a', makeInput({ yaw: 0, melee: true }))
+    sim.tick(now)
+    expect(b.shield).toBeLessThan(shieldBefore)
+    expect(a.meleeCooldownUntil).toBeGreaterThan(now)
+  })
 })
 
 describe('MatchSim: flag carrier cannot shoot (fix 1)', () => {
@@ -264,11 +292,11 @@ describe('MatchSim: flag carrier cannot shoot (fix 1)', () => {
     expect(events.some((e) => e.type === 'shot' && e.playerId === 'a')).toBe(false)
     expect(a.ammo[0]).toBe(30)
 
-    // melee still works (rate-limited via cooldownUntil) while carrying
+    // melee still works (rate-limited via its own meleeCooldownUntil) while carrying
     sim.setInput('a', makeInput({ yaw: a.yaw, melee: true }))
     now += TICK_DT
     sim.tick(now)
-    expect(a.cooldownUntil).toBeGreaterThan(now)
+    expect(a.meleeCooldownUntil).toBeGreaterThan(now)
 
     // non-carrier fires normally
     b.pos = { ...a.pos }

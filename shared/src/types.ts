@@ -74,6 +74,11 @@ export interface PlayerState {
   /** Absolute sim timestamp, same convention as cooldownUntil above (not a
    * countdown like teleportCooldownUntil) -- gates weapon-slot swaps. */
   swapCooldownUntil: number
+  /** Melee's own absolute-timestamp cooldown, deliberately separate from
+   * cooldownUntil: melee stays available while the weapon is on its rate-of-
+   * fire cooldown or locked out reloading, so an empty magazine never leaves
+   * the player with no action at all. */
+  meleeCooldownUntil: number
   camoUntil: number
   carryingFlag: Team | null
   stuckDarts: number

@@ -235,7 +235,11 @@ describe('stepMovement', () => {
     expect(result).toBe('fell')
   })
 
-  it('carrier is slower', () => {
+  it('carrier moves at full speed (the flag costs you your gun, not your legs)', () => {
+    // Deliberate 2026-08-14 change, measured over 5 seeded 8-bot matches: the
+    // old 0.9 carrier penalty pushed first capture out to as late as 257s and
+    // left 2 of 5 matches unresolved after the full 480s clock. Carriers
+    // already pay for the flag by being unable to shoot at all (sim.ts).
     const free = makeTestPlayer()
     const carrier = makeTestPlayer({ carryingFlag: 1 })
     const freeStartZ = free.pos.z
@@ -246,10 +250,7 @@ describe('stepMovement', () => {
     }
     const freeDist = Math.abs(free.pos.z - freeStartZ)
     const carrierDist = Math.abs(carrier.pos.z - carrierStartZ)
-    expect(carrierDist).toBeLessThan(freeDist)
-    const ratio = carrierDist / freeDist
-    expect(ratio).toBeGreaterThan(0.85)
-    expect(ratio).toBeLessThan(0.95)
+    expect(carrierDist).toBeCloseTo(freeDist, 6)
   })
 })
 

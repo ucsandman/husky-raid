@@ -191,6 +191,7 @@ export class MatchSim {
       equipmentCharges: equipmentChargesFor(loadout.equipment),
       equipmentCooldownUntil: 0,
       swapCooldownUntil: 0,
+      meleeCooldownUntil: 0,
       camoUntil: 0,
       carryingFlag: null,
       stuckDarts: 0,
@@ -408,6 +409,7 @@ export class MatchSim {
     p.equipmentCharges = equipmentChargesFor(loadout.equipment)
     p.equipmentCooldownUntil = 0
     p.swapCooldownUntil = 0
+    p.meleeCooldownUntil = 0
     p.camoUntil = 0
     p.stuckDarts = 0
     p.teleportCooldownUntil = 0
@@ -552,6 +554,19 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
     p.swapCooldownUntil = now + SWAP_COOLDOWN
   }
 
+  // Melee runs on its OWN cooldown, ahead of and independent of the weapon's
+  // rate-of-fire and reload lockouts. Sharing cooldownUntil meant an empty
+  // magazine left the player with no action at all for RELOAD_TIME, which is
+  // the worst possible moment to be disarmed. Flag carriers can still melee
+  // (spec §2) -- only shooting is denied them, below.
+  if (input.melee) {
+    if (now >= p.meleeCooldownUntil) {
+      doMeleeAttack(sim, p, MELEE_RANGE, MELEE_DAMAGE, 'melee', now, events)
+      p.meleeCooldownUntil = now + MELEE_COOLDOWN
+    }
+    return
+  }
+
   if (now < p.cooldownUntil) return
 
   // Reload completes here rather than at the instant the mag ran dry, so the
@@ -562,14 +577,8 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
     p.ammo[p.activeWeapon] = WEAPONS[p.weapons[p.activeWeapon]].magSize
   }
 
-  // Flag carrier cannot shoot (spec §2): melee stays functional and rate-limited.
-  if (p.carryingFlag !== null && !input.melee) return
-
-  if (input.melee) {
-    doMeleeAttack(sim, p, MELEE_RANGE, MELEE_DAMAGE, 'melee', now, events)
-    p.cooldownUntil = now + MELEE_COOLDOWN
-    return
-  }
+  // Flag carrier cannot shoot (spec §2).
+  if (p.carryingFlag !== null) return
 
   if (!input.fire) return
 

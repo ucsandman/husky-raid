@@ -72,6 +72,7 @@ function reconstructPlayerState(snap: SnapPlayer): PlayerState {
     equipmentCharges: 0,
     equipmentCooldownUntil: 0,
     swapCooldownUntil: 0,
+    meleeCooldownUntil: 0,
     camoUntil: 0,
     carryingFlag: snap.carryingFlag,
     stuckDarts: 0,
