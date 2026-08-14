@@ -1,0 +1,341 @@
+import type { ClientMsg, Team } from '@riftlane/shared'
+import { store, saveSettings, DEFAULT_SENSITIVITY, type ClientState, type RosterPlayer } from '../state'
+
+const TEAM_COLOR: Record<Team, string> = { 0: 'var(--cobalt)', 1: 'var(--ember)' }
+const TEAM_NAME: Record<Team, string> = { 0: 'Cobalt', 1: 'Ember' }
+
+type Send = (msg: ClientMsg) => void
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className?: string,
+  text?: string
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag)
+  if (className) node.className = className
+  if (text !== undefined) node.textContent = text
+  return node
+}
+
+/** Mounts the DOM screen stack into `root` and keeps it in sync with the
+ * store. No framework: full re-render of the screen area on every state
+ * change (the tree is small). Text inputs use 'change', not 'input', so a
+ * re-render never yanks focus out from under someone mid-keystroke. */
+export function initMenu(root: HTMLElement, send: Send): void {
+  root.innerHTML = ''
+  const app = el('div', 'app')
+  root.appendChild(app)
+
+  store.subscribe((state) => render(app, state, send))
+}
+
+function render(app: HTMLElement, state: ClientState, send: Send): void {
+  app.innerHTML = ''
+  app.appendChild(renderStatusBar(state))
+
+  const screen =
+    state.phase === 'menu'
+      ? renderMenuScreen(state, send)
+      : state.phase === 'queue'
+        ? renderQueueScreen(state, send)
+        : state.phase === 'lobby'
+          ? renderLobbyScreen(state, send)
+          : state.phase === 'playing'
+            ? renderPlayingScreen(state)
+            : renderEndedScreen(state, send)
+
+  app.appendChild(screen)
+}
+
+// ---- status bar (connection + error banner, shown on every screen) --------
+
+function renderStatusBar(state: ClientState): HTMLElement {
+  const bar = el('div', 'status-bar')
+
+  const dot = el('span', `status-dot status-dot--${state.connectionStatus}`)
+  const label = el(
+    'span',
+    'status-label',
+    state.connectionStatus === 'open'
+      ? 'connected'
+      : state.connectionStatus === 'connecting'
+        ? 'connecting…'
+        : state.connectionStatus === 'reconnecting'
+          ? 'reconnecting…'
+          : 'disconnected'
+  )
+  bar.append(dot, label)
+
+  if (state.errorMessage) {
+    const err = el('span', 'status-error', state.errorMessage)
+    bar.appendChild(err)
+  }
+
+  return bar
+}
+
+// ---- menu screen ------------------------------------------------------------
+
+function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
+  const screen = el('div', 'screen screen--menu')
+  const card = el('div', 'card')
+
+  card.appendChild(el('h1', 'title', 'RIFTLANE'))
+  card.appendChild(el('p', 'subtitle', 'arena FPS — capture the flag'))
+
+  const nameRow = el('div', 'field')
+  nameRow.appendChild(el('label', 'field-label', 'CALLSIGN'))
+  const nameInput = el('input', 'text-input')
+  nameInput.type = 'text'
+  nameInput.maxLength = 16
+  nameInput.placeholder = 'Player'
+  nameInput.value = state.settings.name
+  nameInput.addEventListener('change', () => {
+    const settings = { ...state.settings, name: nameInput.value.trim().slice(0, 16) }
+    saveSettings(settings)
+    store.set({ settings })
+  })
+  nameRow.appendChild(nameInput)
+  card.appendChild(nameRow)
+
+  const actions = el('div', 'actions')
+
+  const quickPlayBtn = el('button', 'btn btn--primary', 'Quick Play')
+  quickPlayBtn.addEventListener('click', () => send({ t: 'quick_play' }))
+  actions.appendChild(quickPlayBtn)
+
+  const createBtn = el('button', 'btn', 'Create Room')
+  createBtn.addEventListener('click', () => send({ t: 'create_room' }))
+  actions.appendChild(createBtn)
+
+  const joinRow = el('div', 'join-row')
+  const codeInput = el('input', 'text-input text-input--code')
+  codeInput.type = 'text'
+  codeInput.maxLength = 4
+  codeInput.placeholder = 'CODE'
+  const joinBtn = el('button', 'btn', 'Join Room')
+  const doJoin = (): void => {
+    const code = codeInput.value.trim().toUpperCase()
+    if (code.length === 4) send({ t: 'join_room', code })
+  }
+  joinBtn.addEventListener('click', doJoin)
+  codeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doJoin()
+  })
+  joinRow.append(codeInput, joinBtn)
+  actions.appendChild(joinRow)
+
+  card.appendChild(actions)
+  card.appendChild(renderSettingsPanel(state))
+
+  screen.appendChild(card)
+  return screen
+}
+
+function renderSettingsPanel(state: ClientState): HTMLElement {
+  const panel = el('div', 'settings-panel')
+  panel.appendChild(el('h2', 'panel-heading', 'SETTINGS'))
+
+  const sensRow = el('div', 'field field--slider')
+  const sensValue = el('span', 'field-value', state.settings.sensitivity.toFixed(4))
+  sensRow.appendChild(el('label', 'field-label', 'Mouse sensitivity'))
+  const sensInput = el('input', 'range-input')
+  sensInput.type = 'range'
+  sensInput.min = '0.0005'
+  sensInput.max = '0.006'
+  sensInput.step = '0.0001'
+  sensInput.value = String(state.settings.sensitivity || DEFAULT_SENSITIVITY)
+  sensInput.addEventListener('input', () => {
+    sensValue.textContent = Number(sensInput.value).toFixed(4)
+  })
+  sensInput.addEventListener('change', () => {
+    const settings = { ...state.settings, sensitivity: Number(sensInput.value) }
+    saveSettings(settings)
+    store.set({ settings })
+  })
+  sensRow.append(sensInput, sensValue)
+  panel.appendChild(sensRow)
+
+  const volRow = el('div', 'field field--slider')
+  const volValue = el('span', 'field-value', `${Math.round(state.settings.volume * 100)}%`)
+  volRow.appendChild(el('label', 'field-label', 'Volume'))
+  const volInput = el('input', 'range-input')
+  volInput.type = 'range'
+  volInput.min = '0'
+  volInput.max = '1'
+  volInput.step = '0.05'
+  volInput.value = String(state.settings.volume)
+  volInput.addEventListener('input', () => {
+    volValue.textContent = `${Math.round(Number(volInput.value) * 100)}%`
+  })
+  volInput.addEventListener('change', () => {
+    const settings = { ...state.settings, volume: Number(volInput.value) }
+    saveSettings(settings)
+    store.set({ settings })
+  })
+  volRow.append(volInput, volValue)
+  panel.appendChild(volRow)
+
+  return panel
+}
+
+// ---- queue screen -------------------------------------------------------------
+
+function renderQueueScreen(state: ClientState, send: Send): HTMLElement {
+  const screen = el('div', 'screen screen--queue')
+  const card = el('div', 'card')
+  card.appendChild(el('h1', 'title', 'SEARCHING'))
+  card.appendChild(el('p', 'subtitle', `queue position ${state.queuePosition}`))
+  card.appendChild(el('div', 'spinner'))
+
+  const cancelBtn = el('button', 'btn btn--ghost', 'Cancel')
+  cancelBtn.addEventListener('click', () => send({ t: 'leave' }))
+  card.appendChild(cancelBtn)
+
+  screen.appendChild(card)
+  return screen
+}
+
+// ---- lobby screen -------------------------------------------------------------
+
+function renderLobbyScreen(state: ClientState, send: Send): HTMLElement {
+  const screen = el('div', 'screen screen--lobby')
+  const card = el('div', 'card card--wide')
+
+  const codeRow = el('div', 'room-code-row')
+  codeRow.appendChild(el('span', 'room-code', state.roomCode ?? '----'))
+  const copyBtn = el('button', 'btn btn--small', 'Copy')
+  copyBtn.addEventListener('click', () => {
+    void copyRoomCode(state.roomCode ?? '', copyBtn)
+  })
+  codeRow.appendChild(copyBtn)
+  card.appendChild(codeRow)
+
+  card.appendChild(el('h2', 'panel-heading', 'PLAYERS'))
+  card.appendChild(renderRoster(state.players))
+
+  const isHost = state.hostId !== null && state.hostId === state.playerId
+  const actions = el('div', 'actions')
+  if (isHost) {
+    const startBtn = el('button', 'btn btn--primary', 'Start Match')
+    startBtn.addEventListener('click', () => send({ t: 'start_match' }))
+    actions.appendChild(startBtn)
+  } else {
+    actions.appendChild(el('p', 'hint', 'Waiting for host to start…'))
+  }
+  const leaveBtn = el('button', 'btn btn--ghost', 'Leave')
+  leaveBtn.addEventListener('click', () => send({ t: 'leave' }))
+  actions.appendChild(leaveBtn)
+  card.appendChild(actions)
+
+  screen.appendChild(card)
+  return screen
+}
+
+function renderRoster(players: RosterPlayer[]): HTMLElement {
+  const list = el('ul', 'roster')
+  if (players.length === 0) {
+    list.appendChild(el('li', 'roster-empty', 'no one here yet'))
+    return list
+  }
+  for (const p of players) {
+    const row = el('li', 'roster-row')
+    const swatch = el('span', 'team-swatch')
+    swatch.style.background = TEAM_COLOR[p.team]
+    row.appendChild(swatch)
+    row.appendChild(el('span', 'roster-name', p.name || '(unnamed)'))
+    row.appendChild(el('span', 'roster-team', TEAM_NAME[p.team]))
+    if (p.bot) row.appendChild(el('span', 'tag tag--bot', 'BOT'))
+    list.appendChild(row)
+  }
+  return list
+}
+
+async function copyRoomCode(code: string, btn: HTMLButtonElement): Promise<void> {
+  const original = btn.textContent
+  try {
+    await navigator.clipboard.writeText(code)
+    btn.textContent = 'Copied!'
+  } catch {
+    btn.textContent = 'Copy failed'
+  }
+  setTimeout(() => {
+    btn.textContent = original
+  }, 1500)
+}
+
+// ---- playing screen (placeholder -- Task 12 replaces this) --------------------
+
+function renderPlayingScreen(state: ClientState): HTMLElement {
+  const screen = el('div', 'screen screen--playing')
+  const card = el('div', 'card')
+  card.appendChild(el('h1', 'title', 'MATCH STARTING'))
+  card.appendChild(el('p', 'subtitle', state.mapName ? `map: ${state.mapName}` : 'connecting to arena…'))
+  card.appendChild(el('div', 'spinner'))
+  card.appendChild(el('p', 'hint', `snapshots received: ${state.snapshotCount}`))
+  screen.appendChild(card)
+  return screen
+}
+
+// ---- ended screen -------------------------------------------------------------
+
+function renderEndedScreen(state: ClientState, send: Send): HTMLElement {
+  const screen = el('div', 'screen screen--ended')
+  const card = el('div', 'card card--wide')
+
+  const result = state.matchEnd
+  const winnerText =
+    result === null
+      ? 'match ended'
+      : result.winner === null
+        ? 'DRAW'
+        : `${TEAM_NAME[result.winner]} WINS`
+  const winnerHeading = el('h1', 'title', winnerText)
+  if (result?.winner !== undefined && result?.winner !== null) {
+    winnerHeading.style.color = TEAM_COLOR[result.winner]
+  }
+  card.appendChild(winnerHeading)
+
+  if (result) {
+    card.appendChild(el('p', 'subtitle', `${result.scores[0]} — ${result.scores[1]}`))
+    card.appendChild(renderScoreboard(result.board))
+  }
+
+  const actions = el('div', 'actions')
+  const rematchBtn = el('button', 'btn btn--primary', state.rematchVoted ? 'Vote cast ✓' : 'Vote Rematch')
+  rematchBtn.disabled = state.rematchVoted
+  rematchBtn.addEventListener('click', () => {
+    send({ t: 'rematch_vote' })
+    store.set({ rematchVoted: true })
+  })
+  actions.appendChild(rematchBtn)
+
+  const leaveBtn = el('button', 'btn btn--ghost', 'Back to Menu')
+  leaveBtn.addEventListener('click', () => {
+    send({ t: 'leave' })
+    store.set({ phase: 'menu', roomCode: null, hostId: null, players: [], matchEnd: null, rematchVoted: false })
+  })
+  actions.appendChild(leaveBtn)
+
+  card.appendChild(actions)
+  screen.appendChild(card)
+  return screen
+}
+
+function renderScoreboard(board: { name: string; kills: number; deaths: number; captures: number }[]): HTMLElement {
+  const table = el('table', 'scoreboard')
+  const head = el('tr', 'scoreboard-head')
+  head.append(el('th', undefined, 'Name'), el('th', undefined, 'K'), el('th', undefined, 'D'), el('th', undefined, 'C'))
+  table.appendChild(head)
+  for (const row of board) {
+    const tr = el('tr', 'scoreboard-row')
+    tr.append(
+      el('td', undefined, row.name),
+      el('td', undefined, String(row.kills)),
+      el('td', undefined, String(row.deaths)),
+      el('td', undefined, String(row.captures))
+    )
+    table.appendChild(tr)
+  }
+  return table
+}
