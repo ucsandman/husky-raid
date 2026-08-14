@@ -43,3 +43,15 @@ Every place that needs "forward" or "right" derives it from `physics.ts`'s `righ
 ## 2026-08-14: SnapPlayer carries ammo/grenades/equipment for the HUD
 
 The over-the-wire `SnapPlayer` type (`shared/src/protocol.ts`) originally carried only position/health/weapon-id fields. Ammo counts, grenade counts, and equipment charge counts were added for every player (not just the local one) so the HUD can render real numbers instead of icons with no counts. Sent for all 8 players at 20Hz; the added payload (a few small numbers/objects per player) is negligible next to the rest of the snapshot.
+
+## 2026-08-14: Maps as typed TS modules, not the spec's JSON data files
+
+The design spec (§4) calls for map data as JSON files under `shared/maps/`. Shipped instead as typed TypeScript modules (`shared/src/maps/`) exporting `GameMap` objects directly. Rejected the JSON route: a typed module gets full compile-time checking of box/waypoint/teleporter shapes for free and needs zero runtime loader/parser/validation code, at the cost of the map data not being editable without a rebuild. Both server and client still load the exact same module, matching the spec's "both server and client load the same file" requirement. Deviation recorded; revisit if maps need to be hot-edited or authored outside the codebase.
+
+## 2026-08-14: Grav Maul AoE + wind-up and Ion Charger charge-up cut from v1
+
+The spec (§3) describes Grav Maul as a 4m-radius AoE slam with a 1.2s wind-up, and Ion Charger as a tap/full-charge weapon with charge-dependent damage. Both shipped simplified for v1: Grav Maul is a single-target instant power-melee hit (like Arc Blade, no AoE/wind-up), and Ion Charger fires flat-damage charge projectiles with no charge-up mechanic. The now-unused fields these would have needed (`WeaponDef.aoeRadius`, `Projectile.chargeFrac`) were removed from the types rather than left dead. Revisit for v2 if the flatter versions don't feel distinct enough in playtesting.
+
+## 2026-08-14: Field-level input sanitization at the HostedMatch.handleInput trust boundary
+
+Inbound `PlayerInput` (`server/src/match.ts` `handleInput`), the hello `name` field (`server/src/net.ts`), and `join_room`'s room `code` (`server/src/lobby.ts`) are all untrusted client JSON. Chose field-level coercion/clamping at each entry point (finite-number guards with fallbacks, range clamps, `!!` booleans, string-shape checks) over a schema-validation library: the message shapes are small and stable, and a library dependency wasn't worth it for a handful of fields. `handleInput` in particular matters most -- an unclamped `yaw`/`pitch` of `Infinity` would propagate as `NaN` through `viewDir`'s `sin`/`cos` into the whole deterministic sim.

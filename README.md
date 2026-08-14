@@ -18,6 +18,8 @@ RIFTLANE is a browser-based 8-player capture-the-flag arena shooter, built as an
 
 ## Running it
 
+Requires Node.js >= 20.
+
 ### Development
 
 ```bash
@@ -34,7 +36,7 @@ npm run build         # builds the client into client/dist
 npm run start          # serves the built client + WebSocket API on one port
 ```
 
-Then open `http://localhost:8080`. The client connects back to whatever host and port the page was loaded from, so setting `PORT` to run on a different port (e.g. because 8080 is taken) just works -- no rebuild needed.
+Then open `http://localhost:8080`. The client connects back to whatever host, port, and protocol (`ws://` or `wss://`, matching the page's own `http://`/`https://`) the page was loaded from, so setting `PORT` to run on a different port (e.g. because 8080 is taken), or serving behind TLS, just works -- no rebuild needed.
 
 ## Playing
 
@@ -54,7 +56,7 @@ npm test          # unit + integration tests (vitest)
 npm run typecheck # tsc project references across all three workspaces
 ```
 
-The integration suite (`server/test/integration.test.ts`) boots a real server on an ephemeral port and drives it with real WebSocket clients through a full match lifecycle, including a mid-match disconnect and bot replacement.
+The integration suite (`server/test/integration.test.ts`) boots a real server on an ephemeral port and drives it with real WebSocket clients, proving the snapshot stream, input ack, mid-match disconnect/bot-swap, and clean shutdown all work over real sockets. It doesn't exercise captures or the rest of match logic -- that's covered by the sim unit tests plus manual playtest.
 
 ## Project structure
 
