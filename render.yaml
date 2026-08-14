@@ -1,0 +1,15 @@
+# Render blueprint: deploy RIFTLANE as a single web service (HTTP + WebSockets on one port).
+# In the Render dashboard: New > Blueprint > pick this repo. Render builds the client and
+# runs the authoritative game server; the client auto-connects to the page's own origin
+# over wss://, so no extra configuration is needed.
+services:
+  - type: web
+    name: riftlane
+    runtime: node
+    plan: free # free instances sleep after ~15 min idle (first visit then takes ~1 min); upgrade to starter to stay warm
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
