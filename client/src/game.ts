@@ -5,6 +5,7 @@ import { createScene, type SceneCtx } from './render/scene'
 import { buildMap } from './render/mapMesh'
 import { makeSoldier, updateSoldier } from './render/soldier'
 import { EffectsSystem } from './render/effects'
+import { disposeObject3D } from './render/dispose'
 import type { InputManager } from './input'
 import type { Net } from './net'
 
@@ -187,10 +188,43 @@ export class Game {
     mesh.position.set(bobX, bobY, kick)
   }
 
+  /**
+   * Called on every match_start (a "rematch" is a fresh match_start too)
+   * and whenever the client leaves the 'playing' phase. Order matters:
+   * every geometry/material/texture this match allocated is disposed
+   * *before* sceneCtx.dispose() tears down the renderer's internal caches
+   * -- disposeObject3D()/EffectsSystem.dispose() rely on the old renderer
+   * still being alive to actually free the GPU-side buffers/textures its
+   * dispose-event listeners are wired to. renderer.dispose() alone does
+   * NOT walk the scene disposing individual objects (see render/dispose.ts),
+   * so without this every rematch would leak the previous match's map,
+   * soldiers, effects pools, and cached viewmodel meshes.
+   */
   teardown(): void {
     if (this.raf) cancelAnimationFrame(this.raf)
     this.raf = 0
-    this.sceneCtx?.dispose()
+
+    const ctx = this.sceneCtx
+    if (ctx) {
+      if (this.mapGroup) {
+        ctx.scene.remove(this.mapGroup)
+        disposeObject3D(this.mapGroup)
+      }
+      for (const group of this.soldiers.values()) {
+        ctx.scene.remove(group)
+        disposeObject3D(group)
+      }
+      // Viewmodel meshes are parented to viewmodelRig (a child of the old
+      // camera, discarded below with sceneCtx) -- still disposed
+      // explicitly since removing from the scene graph frees no GPU memory
+      // on its own.
+      for (const mesh of this.viewmodels.values()) {
+        disposeObject3D(mesh)
+      }
+      this.effects?.dispose()
+    }
+    ctx?.dispose()
+
     this.sceneCtx = null
     this.mapGroup = null
     this.effects = null

@@ -87,8 +87,12 @@ function forwardVecOf(yaw: number): Vec3 {
   return { x: Math.sin(yaw), y: 0, z: Math.cos(yaw) }
 }
 
+// Must track physics.ts's rightVec exactly: right = forward x up =
+// (-cos yaw, 0, sin yaw). reprojectMovement round-trips a world-space
+// direction through this basis and stepMovement's, so a mismatched sign
+// here silently steers every bot sideways of its intended path.
 function rightVecOf(yaw: number): Vec3 {
-  return { x: Math.cos(yaw), y: 0, z: -Math.sin(yaw) }
+  return { x: -Math.cos(yaw), y: 0, z: Math.sin(yaw) }
 }
 
 /** stepMovement derives its movement basis from input.yaw itself (forward/

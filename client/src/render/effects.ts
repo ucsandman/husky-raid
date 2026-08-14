@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { SimEvent, SnapProjectile, Vec3 } from '@riftlane/shared'
+import { disposeObject3D } from './dispose'
 
 const TRACER_LIFE = 0.08
 const MUZZLE_LIFE = 0.06
@@ -17,6 +18,12 @@ const TRACER_COLOR = 0xfff2a8
 const MUZZLE_COLOR = 0xffe9a0
 const EXPLOSION_COLOR = 0xff7a33
 const SPARK_COLOR = 0x9fe6ff
+
+// syncProjectiles orients a mesh toward its velocity every frame for every
+// live projectile -- a shared, never-mutated axis constant plus one reused
+// scratch vector (below, on the class) avoids two `new THREE.Vector3()`
+// allocations per projectile per frame.
+const UP_AXIS = new THREE.Vector3(0, 1, 0)
 
 interface Slot<T extends THREE.Object3D> {
   obj: T
@@ -54,17 +61,6 @@ function softDotTexture(): THREE.Texture {
   return tex
 }
 
-function disposeObject3D(obj: THREE.Object3D): void {
-  obj.traverse((child) => {
-    if (child instanceof THREE.Mesh || child instanceof THREE.Line || child instanceof THREE.Points) {
-      child.geometry.dispose()
-      const mat = child.material
-      if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
-      else mat.dispose()
-    }
-  })
-}
-
 /**
  * All transient VFX (tracers, muzzle flashes, explosions, shield sparks) +
  * pooled per-id projectile meshes + the death-fade overlay. Pools are
@@ -74,6 +70,7 @@ function disposeObject3D(obj: THREE.Object3D): void {
  */
 export class EffectsSystem {
   private readonly scene: THREE.Scene
+  private readonly camera: THREE.Camera
   private readonly dotTexture = softDotTexture()
   private readonly tracers: Slot<THREE.Line>[] = []
   private readonly muzzles: Slot<THREE.Sprite>[] = []
@@ -81,6 +78,8 @@ export class EffectsSystem {
   private readonly sparks: Slot<THREE.Points>[] = []
   private readonly projectileMeshes = new Map<number, THREE.Object3D>()
   private readonly deathFade: THREE.Mesh
+  /** Reused across every syncProjectiles() call -- see UP_AXIS above. */
+  private readonly scratchDir = new THREE.Vector3()
   private time = 0
   private tracerCursor = 0
   private muzzleCursor = 0
@@ -89,6 +88,7 @@ export class EffectsSystem {
 
   constructor(scene: THREE.Scene, camera: THREE.Camera) {
     this.scene = scene
+    this.camera = camera
     for (let i = 0; i < TRACER_POOL; i++) this.tracers.push(this.makeTracerSlot())
     for (let i = 0; i < MUZZLE_POOL; i++) this.muzzles.push(this.makeMuzzleSlot())
     for (let i = 0; i < EXPLOSION_POOL; i++) this.explosions.push(this.makeExplosionSlot())
@@ -253,8 +253,8 @@ export class EffectsSystem {
       mesh.position.set(pr.pos.x, pr.pos.y, pr.pos.z)
       const speed = Math.hypot(pr.vel.x, pr.vel.y, pr.vel.z)
       if (speed > 0.01) {
-        const dir = new THREE.Vector3(pr.vel.x, pr.vel.y, pr.vel.z).normalize()
-        mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+        this.scratchDir.set(pr.vel.x, pr.vel.y, pr.vel.z).normalize()
+        mesh.quaternion.setFromUnitVectors(UP_AXIS, this.scratchDir)
       }
     }
     for (const [id, mesh] of this.projectileMeshes) {
@@ -357,5 +357,47 @@ export class EffectsSystem {
       slot.active = false
       slot.obj.visible = false
     }
+  }
+
+  // ---- teardown -----------------------------------------------------------------
+
+  /** Releases every GPU resource this system owns: all four pools, every
+   * live projectile mesh, the shared dot texture, and the death-fade plane
+   * (removed from the camera it was parented to in the constructor).
+   * Called once from game.teardown() when a match ends -- without it,
+   * every rematch would leak this match's tracer/muzzle/explosion/spark
+   * pool + projectile geometries and textures. */
+  dispose(): void {
+    for (const slot of this.tracers) {
+      this.scene.remove(slot.obj)
+      disposeObject3D(slot.obj)
+    }
+    for (const slot of this.muzzles) {
+      this.scene.remove(slot.obj)
+      disposeObject3D(slot.obj)
+    }
+    for (const slot of this.explosions) {
+      this.scene.remove(slot.obj)
+      disposeObject3D(slot.obj)
+    }
+    for (const slot of this.sparks) {
+      this.scene.remove(slot.obj)
+      disposeObject3D(slot.obj)
+    }
+    for (const mesh of this.projectileMeshes.values()) {
+      this.scene.remove(mesh)
+      disposeObject3D(mesh)
+    }
+    this.projectileMeshes.clear()
+
+    this.camera.remove(this.deathFade)
+    disposeObject3D(this.deathFade)
+
+    // Shared across every muzzle/spark material's `map` above (already
+    // disposed N times via disposeObject3D -- Texture.dispose() just
+    // dispatches a 'dispose' event, safe to call redundantly), disposed
+    // once more explicitly here so this system's own allocation is
+    // provably released even if the pools were ever empty.
+    this.dotTexture.dispose()
   }
 }

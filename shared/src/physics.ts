@@ -129,7 +129,9 @@ export function stepMovement(
   p.pitch = input.pitch
 
   const forwardVec: Vec3 = { x: Math.sin(p.yaw), y: 0, z: Math.cos(p.yaw) }
-  const rightVec: Vec3 = { x: Math.cos(p.yaw), y: 0, z: -Math.sin(p.yaw) }
+  // right = forward x up (right-handed world, up = +y): (sinψ,0,cosψ) x (0,1,0)
+  // = (0*0 - cosψ*1, cosψ*0 - sinψ*0, sinψ*1 - 0*0) = (-cosψ, 0, sinψ).
+  const rightVec: Vec3 = { x: -Math.cos(p.yaw), y: 0, z: Math.sin(p.yaw) }
   const wish = add(scale(forwardVec, input.forward), scale(rightVec, input.strafe))
   const wishDir = normalize(wish)
   const speedMult = p.carryingFlag !== null ? FLAG_CARRIER_SPEED_MULT : 1

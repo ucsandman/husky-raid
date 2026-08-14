@@ -54,7 +54,11 @@ export class InputManager {
   private readonly onMouseMove = (e: MouseEvent): void => {
     if (!this.locked) return
     const s = this.getSensitivity()
-    this.yaw += e.movementX * s
+    // Moving the mouse right (positive movementX) must turn the view right,
+    // i.e. decrease yaw under this project's "yaw=0 faces +z, yaw=PI faces
+    // -z" convention (physics.ts's forward = (sin yaw, 0, cos yaw)) --
+    // subtracting here, not adding, is what keeps mouse-look non-inverted.
+    this.yaw -= e.movementX * s
     this.pitch -= e.movementY * s
     this.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, this.pitch))
   }
