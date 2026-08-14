@@ -72,6 +72,29 @@ store.subscribe((state) => {
   lastPhase = state.phase
 })
 
+// The resume token goes in sessionStorage, not localStorage: it is a bearer
+// token for one player's seat in a live match, and a second tab must never
+// be able to take the match away from this one. sessionStorage still
+// survives a reload of this tab, which is the case worth surviving.
+const RESUME_KEY = 'riftlane:resume'
+
+function readResumeToken(): string | null {
+  try {
+    return sessionStorage.getItem(RESUME_KEY)
+  } catch {
+    // storage unavailable (private mode) -- resuming is just off
+    return null
+  }
+}
+
+function writeResumeToken(token: string): void {
+  try {
+    sessionStorage.setItem(RESUME_KEY, token)
+  } catch {
+    // storage unavailable (private mode, quota) -- non-fatal
+  }
+}
+
 // The server requires `hello` as the literal first message on every socket
 // (reconnects included) and identifies the player by whatever name it
 // carries -- so we hold off sending it until the player's first real
@@ -90,6 +113,10 @@ net.onStatus((status, attempt) => {
   if (status === 'open') {
     helloSentForSocket = false
     store.set({ connectionStatus: status, errorMessage: null })
+    // Someone who dropped mid-match has no button left to press -- they are
+    // back on the menu screen -- so a socket carrying a seat to reclaim says
+    // hello straight away instead of waiting for an action that won't come.
+    if (readResumeToken()) sendHello()
   } else if (status === 'connecting') {
     store.set({ connectionStatus: status, errorMessage: null })
   } else {
@@ -112,18 +139,23 @@ net.onStatus((status, attempt) => {
   }
 })
 
+function sendHello(): void {
+  helloSentForSocket = true
+  const resume = readResumeToken()
+  const name = store.state.settings.name.trim() || 'Player'
+  net.send(resume ? { t: 'hello', name, resume } : { t: 'hello', name })
+}
+
 function guardedSend(msg: ClientMsg): void {
   if (!socketOpen) return // dropped -- status bar shows connecting/disconnected
-  if (!helloSentForSocket) {
-    helloSentForSocket = true
-    net.send({ t: 'hello', name: store.state.settings.name.trim() || 'Player' })
-  }
+  if (!helloSentForSocket) sendHello()
   net.send(msg)
 }
 
 net.onMsg((msg: ServerMsg) => {
   switch (msg.t) {
     case 'welcome':
+      writeResumeToken(msg.resumeToken)
       store.set({ playerId: msg.playerId })
       break
     case 'room':

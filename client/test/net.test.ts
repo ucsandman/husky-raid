@@ -231,8 +231,8 @@ describe('client net: heartbeat', () => {
     sock.accept()
 
     sock.deliver({ t: 'pong' })
-    sock.deliver({ t: 'welcome', playerId: 'p1' })
+    sock.deliver({ t: 'welcome', playerId: 'p1', resumeToken: 'tok' })
 
-    expect(msgs).toEqual([{ t: 'welcome', playerId: 'p1' }])
+    expect(msgs).toEqual([{ t: 'welcome', playerId: 'p1', resumeToken: 'tok' }])
   })
 })

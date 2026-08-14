@@ -91,3 +91,13 @@ Client to server is an app-level `{t:'ping'}` / `{t:'pong'}` pair every 25s, bec
 Server to client is a real `ws.ping()` sweep every 30s; browsers auto-answer it with no client code involved. A socket that misses one sweep is terminated, which is what makes `lobby.disconnect` run for a player whose network vanished without a TCP FIN instead of holding their match slot until the OS gives up.
 
 The client also treats total silence for 60s as a dead socket and replaces it, rather than sitting on a black-holed connection: pongs land every 25s and a live match sends snapshots 20x a second, so silence that long is never normal.
+
+## 2026-08-14: Session resumption holds a dropped player's seat for 60s behind a bearer token
+
+A dropped socket used to end the match outright for a solo player: `disconnect` called `leaveRoom`, the room emptied, and `HostedMatch.stop()` ran. Now `Lobby.disconnect` distinguishes "went away" from "blinked". A player who drops out of a live match is *suspended* rather than forgotten: `removeHuman` still swaps in a stand-in bot (which already inherits their kills/deaths/captures, so the scoreboard doesn't lose a name), but the PlayerConn stays in the room with its `send` replaced by a discard, and `resume()` can reclaim the seat for `RESUME_GRACE_MS`.
+
+The token is a separate `randomUUID`, deliberately NOT the playerId: playerIds are broadcast to every client in rosters and snapshots, so using one as the credential would let any player steal any other player's seat. It is echoed back rather than rotated on resume, so repeated drops keep working. The client keeps it in `sessionStorage`, not `localStorage` -- it is a bearer token for one seat, and a second tab must not be able to take the match from the first. sessionStorage still survives a reload of the same tab, which is the case worth surviving.
+
+Two consequences worth knowing. A room now outlives its last human by up to 60s, so `Lobby.stop()` had to start stopping running matches explicitly (nothing else would), and an expiry sweep runs on the existing queue timer rather than a new one. And resumption is in-memory only: a server restart loses every match, so the free plan waking from sleep still gives everyone a fresh session. Persisting match state was rejected as far more machinery than a browser game with 8-minute rounds is worth.
+
+Rejected: preserving the exact body (position, health, carried flag) by flipping the existing sim player between human and bot control. It is better gameplay, but it reaches into the sim's player model, the `bot-N` id convention, `humanIds`, brain keying and the determinism contract. Rejoining from a spawn point is normal for shooters and costs one function parameter (`addHuman(id, name, team?)`).

@@ -69,6 +69,12 @@ From the menu, either:
 - **Join a room** with a code someone shared with you.
 - **Quick play** to queue into a match automatically -- it starts once enough players have queued, or after a short wait with bots filling the rest.
 
+## Dropping out and coming back
+
+Losing your connection mid-match costs you the next few seconds, not the match. Your seat is held for 60 seconds while a stand-in bot plays it (inheriting your kills, deaths and captures), and the client reconnects on its own and reclaims it: same team, same score, same match. Reloading the page does the same thing, because the resume token lives in `sessionStorage`.
+
+Two things it deliberately does not do. It does not survive the **server** restarting, since match state is in memory only, so a free-plan instance waking from sleep gives you a fresh session. And it does not preserve your position or health: you rejoin from a spawn point.
+
 ## Architecture
 
 RIFTLANE is an npm-workspaces monorepo: `shared` holds the deterministic simulation (physics, weapons, maps, wire protocol) used by both server and client; `server` runs an authoritative 30Hz fixed-timestep simulation per match over WebSockets, broadcasting state snapshots to clients at 20Hz and hosting server-side bots for empty slots; `client` (Vite + Three.js) renders the game, predicts the local player's movement from queued inputs, and interpolates remote players between snapshots to stay smooth despite the slower snapshot rate.

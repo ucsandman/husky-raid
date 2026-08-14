@@ -109,8 +109,9 @@ export class HostedMatch {
     return t0 <= t1 ? 0 : 1
   }
 
-  addHuman(id: string, name: string): PlayerState {
-    const team = this.pickTeam()
+  /** `team` is passed only when restoring a player to the side they were
+   * already on (see Lobby.resume) -- otherwise the balancer picks. */
+  addHuman(id: string, name: string, team: Team = this.pickTeam()): PlayerState {
     const player = this.sim.addPlayer(id, name, team, false)
     this.humanIds.add(id)
     this.ackSeqByPlayer.set(id, 0)

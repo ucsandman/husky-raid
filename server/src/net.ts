@@ -167,9 +167,22 @@ function handleConnection(ws: WS.WebSocket, lobby: Lobby): void {
         send({ t: 'error', message: 'first message must be hello' })
         return
       }
+      // A returning player presents the token from their last `welcome` and
+      // keeps their id, team, score and seat in the match. `typeof` is the
+      // trust-boundary guard: `resume` is untrusted client JSON. Anything
+      // unknown or expired just falls through to a brand-new player.
+      const resumed = typeof msg.resume === 'string' ? lobby.resume(msg.resume, send) : null
+      if (resumed) {
+        playerId = resumed
+        // Echoed back rather than rotated: the same token stays valid for
+        // the next drop, and a player can reconnect repeatedly.
+        send({ t: 'welcome', playerId, resumeToken: msg.resume as string })
+        return
+      }
+
       playerId = randomUUID()
-      lobby.connect(playerId, sanitizeName(msg.name), send)
-      send({ t: 'welcome', playerId })
+      const resumeToken = lobby.connect(playerId, sanitizeName(msg.name), send)
+      send({ t: 'welcome', playerId, resumeToken })
       return
     }
 

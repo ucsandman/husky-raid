@@ -3,7 +3,10 @@ import type { FlagState, SimEvent } from './sim'
 import type { Projectile } from './combat'
 
 export type ClientMsg =
-  | { t: 'hello'; name: string }
+  /** `resume` is the token from a previous `welcome`. When it still matches a
+   * live match slot the server puts this player straight back into it, so a
+   * dropped socket costs the match instead of ending it. */
+  | { t: 'hello'; name: string; resume?: string }
   | { t: 'ping' }
   | { t: 'create_room' }
   | { t: 'join_room'; code: string }
@@ -14,7 +17,9 @@ export type ClientMsg =
   | { t: 'rematch_vote' }
 
 export type ServerMsg =
-  | { t: 'welcome'; playerId: string }
+  /** `resumeToken` is a bearer token: it must NOT be the playerId, which is
+   * broadcast to every other client in rosters and snapshots. */
+  | { t: 'welcome'; playerId: string; resumeToken: string }
   | { t: 'pong' }
   | { t: 'room'; code: string; players: { id: string; name: string; team: Team; bot: boolean }[]; hostId: string }
   | { t: 'queue'; position: number }

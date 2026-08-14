@@ -88,13 +88,13 @@ class TestClient {
   }
 }
 
-function connect(port: number, name: string): Promise<TestClient> {
+function connect(port: number, name: string, resume?: string): Promise<TestClient> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`)
     ws.once('error', reject)
     ws.once('open', () => {
       const client = new TestClient(ws)
-      client.send({ t: 'hello', name })
+      client.send(resume ? { t: 'hello', name, resume } : { t: 'hello', name })
       resolve(client)
     })
   })
@@ -104,19 +104,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Polls GET /health until the lobby reports zero live matches, or throws.
- * Used to know that server-side disconnect cleanup (which stops the
- * HostedMatch tick interval) has actually finished before we shut the
- * server down, so no timer handle is left dangling for vitest to flag. */
-async function waitForNoActiveMatches(port: number, timeoutMs = 3000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const res = await fetch(`http://127.0.0.1:${port}/health`)
-    const body = (await res.json()) as { ok: boolean; matches: number }
-    if (body.matches === 0) return
-    await sleep(25)
-  }
-  throw new Error('timed out waiting for lobby to report zero active matches')
+/** How many matches the lobby currently considers live, per GET /health. */
+async function activeMatches(port: number): Promise<number> {
+  const res = await fetch(`http://127.0.0.1:${port}/health`)
+  const body = (await res.json()) as { ok: boolean; matches: number }
+  return body.matches
 }
 
 describe('integration: full match lifecycle over real websockets', () => {
@@ -208,12 +200,32 @@ describe('integration: full match lifecycle over real websockets', () => {
 
       expect(afterDisconnect.players.length).toBe(8)
 
-      // Close A too, then confirm server-side cleanup (both humans gone ->
-      // room deleted -> HostedMatch.stop() clears its tick interval) before
-      // shutting the server down, so no timer/socket handle is left open.
+      // Close A too. Every human is now gone, but the match deliberately
+      // keeps running: their seats are held for the resume window, played by
+      // stand-in bots (Lobby.RESUME_GRACE_MS). Before session resumption the
+      // room was deleted here and the match stopped.
       a.close()
-      await waitForNoActiveMatches(server.port)
+      await sleep(250)
+      expect(await activeMatches(server.port)).toBe(1)
 
+      // A returns with the token from their welcome and lands back in the
+      // SAME match under the same id, rather than as a new player.
+      const aAgain = await connect(server.port, 'Alice', aWelcome.resumeToken)
+      const againWelcome = await aAgain.waitFor(isWelcome)
+      expect(againWelcome.playerId).toBe(aWelcome.playerId)
+
+      const rejoin = await aAgain.waitFor(isMatchStart)
+      expect(rejoin.yourId).toBe(aWelcome.playerId)
+      expect(rejoin.players.length).toBe(8)
+
+      // Snapshots follow them onto the new socket, which is what makes the
+      // match actually playable again rather than just re-entered.
+      const resumedSnap = await aAgain.waitFor(isSnapshot)
+      expect(resumedSnap.players.some((p) => p.id === aWelcome.playerId && !p.bot)).toBe(true)
+
+      aAgain.close()
+      // server.close() -> lobby.stop() stops every running match, so no tick
+      // interval outlives the test even with a seat still being held.
       server.close()
     },
     TEST_TIMEOUT_MS

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { HostedMatch } from './match'
 import { TEAM_SIZE } from '@riftlane/shared'
 import type { ClientMsg, PlayerInput, ServerMsg, Team } from '@riftlane/shared'
@@ -14,11 +15,25 @@ const ROOM_SIZE = TEAM_SIZE * 2
 const QUEUE_MAX_WAIT_MS = 10_000
 const QUEUE_INSTANT_HUMANS = ROOM_SIZE
 
+/** How long a dropped player's slot in a live match is held open for them.
+ * A stand-in bot plays it meanwhile, so the match never pauses and the other
+ * players never wait. Long enough to cover a free-tier host waking up. */
+const RESUME_GRACE_MS = 60_000
+
+/** A suspended player's messages go nowhere until their next socket arrives. */
+const DISCARD: SendFn = () => {}
+
 interface PlayerConn {
   id: string
   name: string
   send: SendFn
   roomCode: string | null
+  /** Bearer token that lets this player's NEXT socket reclaim their slot.
+   * Deliberately not the playerId, which is broadcast to every other client
+   * in rosters and snapshots and so would let anyone steal the seat. */
+  resumeToken: string
+  /** Set while the socket is gone but the match slot is still theirs. */
+  suspended: { botId: string; team: Team; expiresAt: number } | null
 }
 
 interface QueueEntry {
@@ -46,18 +61,27 @@ export class Lobby {
   private readonly players = new Map<string, PlayerConn>()
   private readonly rooms = new Map<string, Room>()
   private readonly queue: QueueEntry[] = []
+  /** resume token -> playerId, for players whose seat is being held. */
+  private readonly playerByToken = new Map<string, string>()
   private mapIndex = 0
   private readonly queueTimer: ReturnType<typeof setInterval>
 
   constructor(rand: () => number = Math.random, nowFn: () => number = () => Date.now(), queueIntervalMs = 1000) {
     this.rand = rand
     this.nowFn = nowFn
-    this.queueTimer = setInterval(() => this.checkQueue(), queueIntervalMs)
+    this.queueTimer = setInterval(() => {
+      this.expireSuspended()
+      this.checkQueue()
+    }, queueIntervalMs)
   }
 
-  /** Stops the queue timer. Call on shutdown (and in tests, to avoid leaking timers). */
+  /** Stops the queue timer and every running match. Call on shutdown (and in
+   * tests, to avoid leaking timers). Matches are stopped explicitly now that
+   * a room outlives its last human for RESUME_GRACE_MS -- it no longer
+   * self-destructs the moment everyone drops. */
   stop(): void {
     clearInterval(this.queueTimer)
+    for (const room of this.rooms.values()) room.match?.stop()
   }
 
   matchCount(): number {
@@ -70,16 +94,86 @@ export class Lobby {
     return this.rooms.get(code)
   }
 
-  connect(playerId: string, name: string, send: SendFn): void {
-    this.players.set(playerId, { id: playerId, name, send, roomCode: null })
+  /** Registers a socket. Returns the token that this player's next socket can
+   * present to `resume()` after a drop. */
+  connect(playerId: string, name: string, send: SendFn): string {
+    const resumeToken = randomUUID()
+    this.players.set(playerId, { id: playerId, name, send, roomCode: null, resumeToken, suspended: null })
+    this.playerByToken.set(resumeToken, playerId)
+    return resumeToken
   }
 
+  /** A socket went away. If the player was in a live match their seat is held
+   * open (see RESUME_GRACE_MS) instead of being given up, because the drop is
+   * usually the network blinking, not the player leaving. */
   disconnect(playerId: string): void {
     const player = this.players.get(playerId)
     if (!player) return
     this.removeFromQueue(playerId)
-    if (player.roomCode) this.leaveRoom(playerId, player.roomCode)
-    this.players.delete(playerId)
+
+    const room = player.roomCode ? this.rooms.get(player.roomCode) : undefined
+    const inLiveMatch = !!room?.match && !room.matchEnded && room.match.sim.players.has(playerId)
+    if (room?.match && inLiveMatch) {
+      const team = room.match.sim.players.get(playerId)?.team ?? 0
+      // The stand-in already inherits their kills/deaths/captures, so the
+      // scoreboard doesn't visibly lose a player mid-match.
+      const standIn = room.match.removeHuman(playerId)
+      player.send = DISCARD
+      player.suspended = { botId: standIn.id, team, expiresAt: this.nowFn() + RESUME_GRACE_MS }
+      return
+    }
+
+    this.forget(player)
+  }
+
+  /** Gives up a player's seat for good: leaves the room (stopping the match
+   * and deleting the room if they were the last one in it) and invalidates
+   * their resume token. */
+  private forget(player: PlayerConn): void {
+    if (player.roomCode) this.leaveRoom(player.id, player.roomCode)
+    this.playerByToken.delete(player.resumeToken)
+    this.players.delete(player.id)
+  }
+
+  /**
+   * Puts a returning player back into the match they dropped out of, on the
+   * same team and with the score their stand-in kept warm. Returns their
+   * playerId, or null when the token is unknown, already spent, expired, or
+   * its match is over -- in which case the caller treats them as brand new.
+   */
+  resume(token: string, send: SendFn): string | null {
+    const playerId = this.playerByToken.get(token)
+    const player = playerId ? this.players.get(playerId) : undefined
+    if (!player?.suspended) return null
+
+    const room = player.roomCode ? this.rooms.get(player.roomCode) : undefined
+    if (!room?.match || room.matchEnded || this.nowFn() > player.suspended.expiresAt) {
+      this.forget(player)
+      return null
+    }
+
+    const { botId, team } = player.suspended
+    const standIn = room.match.sim.players.get(botId)
+    const carried = standIn
+      ? { kills: standIn.kills, deaths: standIn.deaths, captures: standIn.captures }
+      : null
+    room.match.removeBot(botId)
+
+    player.suspended = null
+    player.send = send
+    const restored = room.match.addHuman(player.id, player.name, team)
+    if (carried) Object.assign(restored, carried)
+
+    this.sendMatchStart(room, player.id)
+    return player.id
+  }
+
+  /** Seats held for players who never came back are released here. */
+  private expireSuspended(): void {
+    const now = this.nowFn()
+    for (const player of [...this.players.values()]) {
+      if (player.suspended && now > player.suspended.expiresAt) this.forget(player)
+    }
   }
 
   handle(playerId: string, msg: ClientMsg): void {
@@ -174,7 +268,9 @@ export class Lobby {
     if (!room || !room.match || !room.matchEnded) return
     if (!room.memberIds.has(player.id)) return
     room.rematchVotes.add(player.id)
-    const humanCount = room.memberIds.size
+    // A player whose seat is only being held can't vote, so they mustn't
+    // count toward the majority they'd have to beat either.
+    const humanCount = [...room.memberIds].filter((id) => !this.players.get(id)?.suspended).length
     if (humanCount > 0 && room.rematchVotes.size * 2 > humanCount) {
       room.match.stop()
       this.launchMatch(room, [...room.memberIds])
