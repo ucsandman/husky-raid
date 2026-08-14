@@ -69,4 +69,5 @@ export interface PlayerState {
   kills: number
   deaths: number
   captures: number
+  teleportCooldownUntil: number
 }
