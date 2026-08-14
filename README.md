@@ -31,10 +31,10 @@ npm run dev:client   # Vite dev server, open http://localhost:5173
 ```bash
 npm install
 npm run build         # builds the client into client/dist
-npm run start          # serves the built client + WebSocket API on :8080
+npm run start          # serves the built client + WebSocket API on one port
 ```
 
-Then open `http://localhost:8080`. Set `PORT` to run on a different port.
+Then open `http://localhost:8080`. The client connects back to whatever host and port the page was loaded from, so setting `PORT` to run on a different port (e.g. because 8080 is taken) just works -- no rebuild needed.
 
 ## Playing
 

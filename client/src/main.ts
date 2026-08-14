@@ -7,7 +7,13 @@ import { initMenu } from './ui/menu'
 import { audioEngine, ALL_SOUND_NAMES } from './audio'
 import './ui/style.css'
 
-const SERVER_URL = `ws://${location.hostname}:8080`
+// Production: the game server serves this client and the WS API on the same
+// origin/port, so connect to whatever host:port the page was loaded from --
+// that way any PORT the server was started with just works. The :8080
+// fallback is only for the Vite dev server case (client on :5173, server on
+// the default :8080) and any other context with no page port to go on.
+const SERVER_URL =
+  !location.port || location.port === '5173' ? `ws://${location.hostname}:8080` : `ws://${location.host}`
 // Server snapshots at 20Hz -- log once a second instead of flooding the console.
 const SNAPSHOT_LOG_INTERVAL = 20
 
