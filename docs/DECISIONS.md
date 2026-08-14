@@ -71,3 +71,7 @@ Draw-call budget is held by merging and instancing rather than by cutting detail
 Materials and their textures are owned by one per-match `MaterialLibrary` created in `createScene()` and disposed from `Game.teardown()`. Module-level caching was rejected: `render/dispose.ts` frees a material's textures when it walks the scene, so a cache outliving a match would hand the next match already-disposed GPU objects. For the same reason, anything whose opacity is animated per-prop (beacon pillars, jump-pad shockwaves) gets its own material instead of a shared library role, and pooled projectile meshes are detached rather than disposed on despawn.
 
 `window.__riftlaneRenderInfo()` is installed by `createScene()` and removed on teardown; it returns calls/triangles/geometries/textures/programs plus DPR, shadow map size and exposure for QA and screenshot runs.
+
+## 2026-08-14: 60fps target verified under a full 8-player bot match
+
+Measured on the dev box (Windows 11, headed Chromium via agent-browser, vite dev build, ~2529x1221 canvas): a live Quick Play match (1 human + 7 bots, active combat, flags being capped) sampled twice with an rAF frame-time probe -- 3595 frames over 15s and a 10s repeat. Median frame 4.2ms, p99 4.3ms, worst 8.4ms, zero frames over the 16.7ms 60fps budget. rAF ran unthrottled (~240fps average), so these are true full-frame costs (sim + render), giving roughly 2-4x headroom against 60fps before any production-build minification. Follow-up closed; no rendering optimization warranted at current scene cost (see draw-call budget entry above).
