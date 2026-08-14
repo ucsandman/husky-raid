@@ -12,8 +12,13 @@ import {
   type SnapProjectile,
   type Team,
 } from '@riftlane/shared'
+import { BotBrain, DEFAULT_DIFFICULTY } from './bots/brain'
+import { assignRoles, type Role } from './bots/roles'
 
 const BOT_NAMES = ['VEX', 'TALON', 'RIVET', 'ONYX', 'JINX', 'MOSS', 'HALCYON-9', 'DITTO']
+
+/** Bot roles are re-scored on this cadence, plus immediately on any flag event. */
+const ROLE_REASSIGN_INTERVAL = 2
 
 /** Sim-time gap the snapshot accumulator waits for between emits. TICK_RATE
  * (30Hz) and SNAPSHOT_RATE (20Hz) don't divide evenly, so this is tracked
@@ -38,7 +43,12 @@ export class HostedMatch {
 
   private readonly humanIds = new Set<string>()
   private readonly ackSeqByPlayer = new Map<string, number>()
+  private readonly seed: number
   private botCount = 0
+
+  private readonly brains = new Map<string, BotBrain>()
+  private roles = new Map<string, Role>()
+  private lastRoleAssignAt = -Infinity
 
   private simNow = 0
   private tickCount = 0
@@ -58,6 +68,16 @@ export class HostedMatch {
     this.sim = new MatchSim(mapName, seed)
     this.onSend = onSend
     this.nowFn = nowFn
+    this.seed = seed
+  }
+
+  /** Roles only drive bot AI, so each team's role scoring only ever sees
+   * that team's bots (humans steer themselves and never need a Role). */
+  private recomputeRoles(): void {
+    const bots = [...this.sim.players.values()].filter((p) => p.bot)
+    const team0 = bots.filter((p) => p.team === 0)
+    const team1 = bots.filter((p) => p.team === 1)
+    this.roles = new Map([...assignRoles(team0, this.sim), ...assignRoles(team1, this.sim)])
   }
 
   private teamCounts(): [number, number] {
@@ -82,9 +102,15 @@ export class HostedMatch {
   addBot(): PlayerState {
     const name = BOT_NAMES[this.botCount % BOT_NAMES.length]
     const id = `bot-${this.botCount}`
+    // Distinct per-bot seed derived from the match seed, so a full replay of
+    // the same match seed reproduces identical bot behavior (determinism
+    // contract) without brains sharing a stream or touching the sim's rng.
+    const brainSeed = this.seed * 1000 + this.botCount + 1
     this.botCount++
     const team = this.pickTeam()
-    return this.sim.addPlayer(id, name, team, true)
+    const player = this.sim.addPlayer(id, name, team, true)
+    this.brains.set(id, new BotBrain(id, DEFAULT_DIFFICULTY, brainSeed))
+    return player
   }
 
   handleInput(id: string, input: PlayerInput): void {
@@ -139,8 +165,24 @@ export class HostedMatch {
 
     this.simNow += TICK_DT
     this.tickCount++
+
+    if (this.simNow - this.lastRoleAssignAt >= ROLE_REASSIGN_INTERVAL) {
+      this.recomputeRoles()
+      this.lastRoleAssignAt = this.simNow
+    }
+    for (const [id, brain] of this.brains) {
+      if (!this.sim.players.has(id)) continue
+      const role = this.roles.get(id) ?? 'defender'
+      this.sim.setInput(id, brain.think(this.sim, this.sim.map, role, this.simNow))
+    }
+
     const events = this.sim.tick(this.simNow)
     this.pendingEvents.push(...events)
+
+    if (events.some((e) => e.type === 'flag_taken' || e.type === 'flag_dropped' || e.type === 'flag_returned')) {
+      this.recomputeRoles()
+      this.lastRoleAssignAt = this.simNow
+    }
 
     this.timeSinceSnapshot += TICK_DT
     if (this.timeSinceSnapshot >= SNAPSHOT_INTERVAL) {
