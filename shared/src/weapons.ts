@@ -28,6 +28,9 @@ export interface WeaponDef {
   homing?: boolean
   lungeRange?: number
   aoeRadius?: number
+  /** Max hitscan/burst raycast distance. Falls back to HITSCAN_MAX_RANGE
+   * when unset. */
+  maxRange?: number
 }
 
 export const WEAPONS: Record<WeaponId, WeaponDef> = {
@@ -82,6 +85,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     magSize: 6,
     pellets: 8,
     spread: 0.18,
+    maxRange: 25,
   },
   sidearm: {
     name: 'Sidearm',

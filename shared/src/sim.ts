@@ -1,7 +1,7 @@
 import type { Vec3, PlayerState, PlayerInput, Team, WeaponId, EquipmentId } from './types'
 import type { GameMap } from './map'
 import { MAPS } from './maps'
-import { add, sub, scale, dot, normalize, length, distSq } from './math'
+import { add, sub, scale, dot, cross, normalize, length, distSq } from './math'
 import { stepMovement } from './physics'
 import {
   applyDamage,
@@ -47,6 +47,12 @@ import {
   MAG_FUSE,
   SWARM_POP_DAMAGE,
   SPAWN_CROWD_RADIUS,
+  PROJECTILE_LIFETIME,
+  GRENADE_COOLDOWN,
+  HITSCAN_MAX_RANGE,
+  DEFAULT_PROJECTILE_SPEED,
+  SWAP_COOLDOWN,
+  RELOAD_TIME,
 } from './constants'
 
 export interface FlagState {
@@ -93,6 +99,24 @@ function eyePos(p: PlayerState): Vec3 {
   return { x: p.pos.x, y: p.pos.y + EYE_HEIGHT, z: p.pos.z }
 }
 
+/**
+ * Jitters `dir` by a random angle up to `spread` radians off-axis, using
+ * the sim's own PRNG stream (sim.nextRand()) so pellet spread stays
+ * deterministic under a given seed + input script. spread<=0 returns dir
+ * unchanged (no rand consumed, e.g. equipment aiming never jitters).
+ */
+function jitterDir(dir: Vec3, spread: number, sim: MatchSim): Vec3 {
+  if (spread <= 0) return dir
+  const worldRef: Vec3 = Math.abs(dir.y) > 0.999 ? { x: 1, y: 0, z: 0 } : { x: 0, y: 1, z: 0 }
+  const right = normalize(cross(dir, worldRef))
+  const up = cross(right, dir)
+  const angle = sim.nextRand() * spread
+  const rot = sim.nextRand() * Math.PI * 2
+  const s = Math.sin(angle)
+  const offset = add(scale(right, Math.cos(rot) * s), scale(up, Math.sin(rot) * s))
+  return normalize(add(scale(dir, Math.cos(angle)), offset))
+}
+
 function equipmentChargesFor(eq: EquipmentId | null): number {
   if (eq === 'grapple') return GRAPPLE_CHARGES
   if (eq === 'repulsor') return REPULSOR_CHARGES
@@ -127,6 +151,10 @@ export class MatchSim {
   private lastGroundedPos: Map<string, Vec3> = new Map()
   private nextProjectileId = 0
   private now = 0
+  /** Events produced outside tick() (currently just removePlayer's forced
+   * flag return) — flushed into the next tick()'s returned events so the
+   * stream stays a complete transition log. */
+  private pendingEvents: SimEvent[] = []
 
   constructor(mapName: string, seed: number) {
     const map = MAPS[mapName]
@@ -161,10 +189,12 @@ export class MatchSim {
       activeWeapon: 0,
       ammo: [WEAPONS[loadout.weapons[0]].magSize, WEAPONS[loadout.weapons[1]].magSize],
       cooldownUntil: 0,
+      grenadeCooldownUntil: 0,
       grenades: loadout.grenades,
       equipment: loadout.equipment,
       equipmentCharges: equipmentChargesFor(loadout.equipment),
       equipmentCooldownUntil: 0,
+      swapCooldownUntil: 0,
       camoUntil: 0,
       carryingFlag: null,
       stuckDarts: 0,
@@ -181,11 +211,15 @@ export class MatchSim {
   removePlayer(id: string): void {
     const p = this.players.get(id)
     if (p && p.carryingFlag !== null) {
-      const flag = this.flags[p.carryingFlag]
+      const flagTeam = p.carryingFlag
+      const flag = this.flags[flagTeam]
       flag.state = 'stand'
-      flag.pos = { ...this.map.flagStands[p.carryingFlag] }
+      flag.pos = { ...this.map.flagStands[flagTeam] }
       flag.carrierId = undefined
       flag.droppedAt = undefined
+      // This runs outside tick(), so the event can't be returned directly —
+      // buffer it and flush at the top of the next tick() (see tick()).
+      this.pendingEvents.push({ type: 'flag_returned', team: flagTeam, playerId: id })
     }
     this.players.delete(id)
     this.inputs.delete(id)
@@ -201,6 +235,14 @@ export class MatchSim {
    * below) can allocate projectile ids. */
   nextId(): number {
     return this.nextProjectileId++
+  }
+
+  /** Not part of the public API surface documented in the task brief, but
+   * left accessible so stepFire's pellet-spread jitter (jitterDir, a
+   * module-private free function below) can consume the sim's own PRNG
+   * stream and stay deterministic under a given seed + input script. */
+  nextRand(): number {
+    return this.rand()
   }
 
   /**
@@ -220,10 +262,20 @@ export class MatchSim {
     return events
   }
 
+  /**
+   * Fixed-timestep contract: callers MUST call tick() at fixed TICK_DT
+   * intervals, with `now` advancing by exactly TICK_DT each call (e.g.
+   * `now += TICK_DT` every call, starting from any base). Every cooldown/
+   * respawn/fuse/timer field in this sim is compared against `now`
+   * directly (no internal delta tracking), so a skipped tick or an
+   * irregular `now` step desyncs cooldown math and breaks the server/
+   * client determinism guarantee this class exists for.
+   */
   tick(now: number): SimEvent[] {
     if (this.phase === 'ended') return []
     this.now = now
-    const events: SimEvent[] = []
+    const events: SimEvent[] = [...this.pendingEvents]
+    this.pendingEvents = []
     const dt = TICK_DT
 
     // 1. respawns due
@@ -252,11 +304,25 @@ export class MatchSim {
       stepEquipment(this, p, input, now)
     }
 
-    // 3. projectiles step + explosions
+    // 3. projectiles step + explosions. frag/mag already self-detonate at
+    // their FRAG_FUSE/MAG_FUSE via stepProjectile's own fuseAt check, so
+    // they always come back exploded here. boomtube/ion_charge/swarm_dart
+    // only explode on contact — stepProjectile never looks at their
+    // fuseAt — so without an explicit check here they'd fly forever if
+    // they never hit anything, leaking projectiles indefinitely. We cap
+    // them at PROJECTILE_LIFETIME: boomtube/ion_charge detonate in place
+    // at timeout (they're contact weapons that still deal splash/direct
+    // damage), swarm_dart just vanishes (it only ever damages on a stick).
     this.projectiles = this.projectiles.filter((pr) => {
       const result = stepProjectile(pr, [...this.players.values()], this.map.boxes, dt, now)
       if (result.exploded) {
         explodeProjectile(this, pr, result.hitPlayerId, now, events)
+        return false
+      }
+      if (now >= pr.fuseAt) {
+        if (pr.kind === 'boomtube' || pr.kind === 'ion_charge') {
+          explodeProjectile(this, pr, undefined, now, events)
+        }
         return false
       }
       return true
@@ -329,10 +395,12 @@ export class MatchSim {
     p.activeWeapon = 0
     p.ammo = [WEAPONS[loadout.weapons[0]].magSize, WEAPONS[loadout.weapons[1]].magSize]
     p.cooldownUntil = 0
+    p.grenadeCooldownUntil = 0
     p.grenades = loadout.grenades
     p.equipment = loadout.equipment
     p.equipmentCharges = equipmentChargesFor(loadout.equipment)
     p.equipmentCooldownUntil = 0
+    p.swapCooldownUntil = 0
     p.camoUntil = 0
     p.stuckDarts = 0
     p.teleportCooldownUntil = 0
@@ -418,17 +486,24 @@ function doMeleeAttack(
   }
 
   if (!best) return
-  const wasAlive = best.alive
+  // best was filtered to target.alive above, so applyDamage always starts
+  // from a live target -- no need to snapshot "was alive" before checking.
   applyDamage(best, damage, now)
-  if (wasAlive && !best.alive) {
+  if (!best.alive) {
     sim.killPlayer(best, now, attacker.id, weapon, { ...best.pos }, events)
   }
 }
 
-/** Fire handling: rate-limited by cooldownUntil. Melee/power-melee resolve
- * in a view cone; hitscan/burst raycast immediately; projectile/charge
- * weapons spawn a Projectile stepped in phase 3. */
+/** Fire handling: weapon-slot swap on its own cooldown, then fire itself
+ * rate-limited by cooldownUntil. Melee/power-melee resolve in a view
+ * cone; hitscan/burst cast one jittered raycast per pellet; projectile/
+ * charge weapons spawn a Projectile stepped in phase 3. */
 function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number, events: SimEvent[]): void {
+  if (input.swap && now >= p.swapCooldownUntil) {
+    p.activeWeapon = p.activeWeapon === 0 ? 1 : 0
+    p.swapCooldownUntil = now + SWAP_COOLDOWN
+  }
+
   if (now < p.cooldownUntil) return
 
   if (input.melee) {
@@ -448,25 +523,37 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
     return
   }
 
-  if (p.ammo[p.activeWeapon] <= 0) p.ammo[p.activeWeapon] = weapon.magSize
+  // Ammo/reload: the shot that empties the mag still fires, but ammo
+  // refills immediately and cooldownUntil is set to RELOAD_TIME instead
+  // of the usual 1/rof, locking the weapon out until reload completes.
+  // Power-melee weapons never reach here (returned above), matching the
+  // "power melee exempt from reload" ruling with no extra branching.
   p.ammo[p.activeWeapon] -= 1
-  p.cooldownUntil = now + 1 / weapon.rof
+  if (p.ammo[p.activeWeapon] <= 0) {
+    p.ammo[p.activeWeapon] = weapon.magSize
+    p.cooldownUntil = now + RELOAD_TIME
+  } else {
+    p.cooldownUntil = now + 1 / weapon.rof
+  }
   events.push({ type: 'shot', playerId: p.id, weapon: weaponId })
 
   const eye = eyePos(p)
   const dir = viewDir(p.yaw, p.pitch)
 
   if (weapon.kind === 'hitscan' || weapon.kind === 'burst') {
-    const hit = raycast(eye, dir, 1000, sim.map.boxes, [...sim.players.values()], p.id)
-    if (hit.kind === 'player' && hit.playerId) {
-      const target = sim.players.get(hit.playerId)
-      if (target && target.alive) {
-        const mult = hit.head ? weapon.headshotMult : 1
-        const dmg = weapon.damage * weapon.pellets * mult
-        const wasAlive = target.alive
-        applyDamage(target, dmg, now)
-        if (wasAlive && !target.alive) {
-          sim.killPlayer(target, now, p.id, weaponId, { ...target.pos }, events)
+    const maxRange = weapon.maxRange ?? HITSCAN_MAX_RANGE
+    const playersArr = [...sim.players.values()]
+    for (let i = 0; i < weapon.pellets; i++) {
+      const pelletDir = jitterDir(dir, weapon.spread, sim)
+      const hit = raycast(eye, pelletDir, maxRange, sim.map.boxes, playersArr, p.id)
+      if (hit.kind === 'player' && hit.playerId) {
+        const target = sim.players.get(hit.playerId)
+        if (target && target.alive) {
+          const mult = hit.head ? weapon.headshotMult : 1
+          applyDamage(target, weapon.damage * mult, now)
+          if (!target.alive) {
+            sim.killPlayer(target, now, p.id, weaponId, { ...target.pos }, events)
+          }
         }
       }
     }
@@ -479,22 +566,24 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
       id: sim.nextId(),
       kind,
       pos: eye,
-      vel: scale(dir, weapon.projectileSpeed ?? 20),
+      vel: scale(dir, weapon.projectileSpeed ?? DEFAULT_PROJECTILE_SPEED),
       ownerId: p.id,
       team: p.team,
-      fuseAt: now + 10,
+      fuseAt: now + PROJECTILE_LIFETIME,
     })
   }
 }
 
 function stepGrenade(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number): void {
   if (!input.grenade) return
+  if (now < p.grenadeCooldownUntil) return
   let kind: 'frag' | 'mag' | null = null
   if (p.grenades.frag > 0) kind = 'frag'
   else if (p.grenades.mag > 0) kind = 'mag'
   if (!kind) return
 
   p.grenades[kind] -= 1
+  p.grenadeCooldownUntil = now + GRENADE_COOLDOWN
   const eye = eyePos(p)
   const dir = viewDir(p.yaw, p.pitch)
   sim.projectiles.push({
@@ -621,7 +710,13 @@ function stepFlags(sim: MatchSim, now: number, events: SimEvent[]): void {
 
     if (flag.state === 'carried' && flag.carrierId) {
       const carrier = sim.players.get(flag.carrierId)
-      if (!carrier) continue
+      if (!carrier) {
+        // Dangling reference (carrier no longer exists, e.g. removed via a
+        // path that didn't clean up the flag) -- self-heal instead of
+        // leaving the flag stuck in 'carried' limbo forever.
+        returnFlagHome(sim, flagTeam, now, events)
+        continue
+      }
       flag.pos = { ...carrier.pos }
       if (length(sub(carrier.pos, sim.map.flagStands[carrier.team])) <= CAPTURE_RADIUS) {
         sim.scores[carrier.team] += 1

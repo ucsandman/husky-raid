@@ -82,3 +82,28 @@ export const REPULSOR_COOLDOWN = 3
 // Sim: respawn picks the spawn point with the fewest live players within
 // this radius, to avoid spawning on top of teammates.
 export const SPAWN_CROWD_RADIUS = 2
+
+// Sim: safety despawn timer for contact-only projectiles (boomtube,
+// ion_charge, swarm_dart) that never hit anything — without this they'd
+// fly forever and leak. frag/mag already detonate on their own FRAG_FUSE/
+// MAG_FUSE regardless of contact, so this is unrelated to those.
+export const PROJECTILE_LIFETIME = 10
+
+// Sim: minimum time between grenade throws (frag or mag).
+export const GRENADE_COOLDOWN = 1
+
+// Combat: default max raycast distance for hitscan/burst weapons that
+// don't set their own WeaponDef.maxRange.
+export const HITSCAN_MAX_RANGE = 1000
+
+// Combat: fallback projectile speed for a WeaponDef with no
+// projectileSpeed set.
+export const DEFAULT_PROJECTILE_SPEED = 20
+
+// Sim: minimum time between weapon-slot swaps.
+export const SWAP_COOLDOWN = 0.5
+
+// Sim: time a weapon is locked out after its magazine empties, before
+// ammo refills and it can fire again. Power-melee weapons never reach
+// this path (they return before the ammo check in stepFire).
+export const RELOAD_TIME = 2

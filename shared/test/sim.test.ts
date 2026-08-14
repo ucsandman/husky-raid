@@ -6,7 +6,7 @@ import { MAPS } from '../src/maps'
 import { TICK_DT, RESPAWN_DELAY, FLAG_RETURN_TIME, CAPTURES_TO_WIN, MAX_SHIELD } from '../src/constants'
 import { makeInput } from './helpers'
 
-function runTicks(sim: MatchSim, n: number, startNow: number, input?: Parameters<typeof makeInput>[0]) {
+function runTicks(sim: MatchSim, n: number, startNow: number) {
   const events = []
   let now = startNow
   for (let i = 0; i < n; i++) {

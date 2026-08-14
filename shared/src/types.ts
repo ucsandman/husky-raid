@@ -59,10 +59,16 @@ export interface PlayerState {
   activeWeapon: 0 | 1
   ammo: [number, number]
   cooldownUntil: number
+  /** Absolute sim timestamp, same convention as cooldownUntil above (not a
+   * countdown like teleportCooldownUntil) -- gates grenade throws. */
+  grenadeCooldownUntil: number
   grenades: { frag: number; mag: number }
   equipment: EquipmentId | null
   equipmentCharges: number
   equipmentCooldownUntil: number
+  /** Absolute sim timestamp, same convention as cooldownUntil above (not a
+   * countdown like teleportCooldownUntil) -- gates weapon-slot swaps. */
+  swapCooldownUntil: number
   camoUntil: number
   carryingFlag: Team | null
   stuckDarts: number
