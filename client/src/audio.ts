@@ -21,6 +21,10 @@ export type SoundName =
   | 'teleport'
   | 'launchpad'
   | 'ui_click'
+  | 'hit_tick'
+  | 'hit_kill'
+  | 'damage_taken'
+  | 'heartbeat'
 
 export const ALL_SOUND_NAMES: readonly SoundName[] = [
   'shot_smg',
@@ -38,6 +42,10 @@ export const ALL_SOUND_NAMES: readonly SoundName[] = [
   'teleport',
   'launchpad',
   'ui_click',
+  'hit_tick',
+  'hit_kill',
+  'damage_taken',
+  'heartbeat',
 ]
 
 export interface PlayOpts {
@@ -382,6 +390,60 @@ function synth(ctx: AudioContext, name: SoundName): AudioBuffer {
         const n = noise(data.length)
         applyLowpass(n, sr, () => 6000)
         for (let i = 0; i < data.length; i++) data[i] = n[i] * Math.exp(-(i / sr) * 260) * 0.5
+      })
+
+    // Hit marker: two-partial high sine tick (2400Hz + 3200Hz), ~40ms decay --
+    // brighter/shorter than shield_hit so it reads as a confirmation ping
+    // rather than the victim's own positional shield sound.
+    case 'hit_tick':
+      return makeBuffer(ctx, 0.05, (data, sr) => {
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          const env = Math.exp(-t * 70) * Math.min(1, t / 0.002)
+          data[i] = (Math.sin(2 * Math.PI * 2400 * t) * 0.6 + Math.sin(2 * Math.PI * 3200 * t) * 0.4) * env
+        }
+      })
+
+    // Kill confirmation: same two-partial ping as hit_tick plus a lower
+    // third partial and a longer decay, so a kill reads as unmistakably
+    // stronger than a chip-damage hit.
+    case 'hit_kill':
+      return makeBuffer(ctx, 0.13, (data, sr) => {
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          const env = Math.exp(-t * 22) * Math.min(1, t / 0.002)
+          data[i] =
+            (Math.sin(2 * Math.PI * 1400 * t) * 0.35 +
+              Math.sin(2 * Math.PI * 2400 * t) * 0.5 +
+              Math.sin(2 * Math.PI * 3200 * t) * 0.35) *
+            env
+        }
+      })
+
+    // Damage taken: low lowpassed noise thud, ~90ms decay -- a body-hit
+    // impact distinct from shield_hit's high "ping" (which only fires while
+    // shield absorbs; this fires whenever the local player's own combined
+    // health+shield drops, shield or no shield).
+    case 'damage_taken':
+      return makeBuffer(ctx, 0.1, (data, sr) => {
+        const n = noise(data.length)
+        applyLowpass(n, sr, () => 900)
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          data[i] = n[i] * Math.exp(-t * 26) * Math.min(1, t / 0.004) * 0.8
+        }
+      })
+
+    // Low-health cue: two soft low sine thumps ("lub-dub"), ~260ms total --
+    // played on a repeating timer while health stays under 25%.
+    case 'heartbeat':
+      return makeBuffer(ctx, 0.26, (data, sr) => {
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          const beat1 = Math.exp(-Math.pow((t - 0.02) / 0.03, 2))
+          const beat2 = Math.exp(-Math.pow((t - 0.13) / 0.035, 2)) * 0.75
+          data[i] = Math.sin(2 * Math.PI * 60 * t) * (beat1 + beat2) * 0.9
+        }
       })
 
     default: {

@@ -111,16 +111,18 @@ describe('Lobby: quick play pairs after 10s', () => {
 })
 
 describe('Lobby: single human waits', () => {
-  it('does not start a bot-only match for a lone queued human', () => {
+  it('starts a bot-filled match for a lone queued human after the max wait', () => {
     vi.useFakeTimers()
     const lobby = new Lobby(fakeRand())
     const a = makePlayer('a')
     lobby.connect(a.id, 'Alice', a.send)
 
     lobby.handle(a.id, { t: 'quick_play' })
-    vi.advanceTimersByTime(30_000)
-
     expect(a.received.find(isMatchStart)).toBeUndefined()
+
+    vi.advanceTimersByTime(10_000)
+
+    expect(a.received.find(isMatchStart)).toBeDefined()
 
     lobby.stop()
   })

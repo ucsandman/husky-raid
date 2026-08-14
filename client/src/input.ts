@@ -96,6 +96,14 @@ export class InputManager {
     return this.locked
   }
 
+  /** Latest continuous look angles, updated on every mousemove -- unlike
+   * `sample()`'s yaw/pitch this isn't stepped to the network's fixed-dt
+   * input ticks, so it's smooth enough to drive client-only viewmodel sway
+   * off the render loop's own dt without waiting on 20Hz snapshots. */
+  getLookAngles(): { yaw: number; pitch: number } {
+    return { yaw: this.yaw, pitch: this.pitch }
+  }
+
   /** True while the scoreboard key is held (HUD reads this each frame). */
   scoreboardHeld(): boolean {
     return this.keys.has(KEY_SCOREBOARD)

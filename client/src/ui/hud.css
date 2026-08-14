@@ -106,6 +106,132 @@
   transform: rotate(-45deg);
 }
 
+/* Kill confirmation: bigger, brighter, and held longer than a plain hit. */
+.hud-hitmarker--kill {
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+}
+
+.hud-hitmarker--kill::before,
+.hud-hitmarker--kill::after {
+  height: 3px;
+  background: var(--warn);
+  box-shadow: 0 0 8px var(--warn);
+}
+
+/* ---- damage feedback (full-screen vignette + directional source) ------ */
+
+.hud-vignette {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(ellipse at center, transparent 45%, rgba(255, 77, 94, 0.75) 100%);
+}
+
+.hud-vignette--low-health {
+  transition: opacity 0.4s ease;
+}
+
+.hud-vignette--damage {
+  transition: opacity 0.1s ease-out;
+}
+
+.hud-vignette--damage.hud-vignette--pulse {
+  opacity: 0.55;
+  transition: opacity 0.1s ease-out;
+}
+
+/* Rotated by JS (transform: rotate(<bearing>rad)) around the screen center
+   so the arrow always points toward the direction the hit came from. */
+.hud-damage-indicator {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+
+.hud-damage-indicator--show {
+  opacity: 1;
+  animation: hud-damage-indicator-fade 0.45s ease-out forwards;
+}
+
+.hud-damage-indicator-arrow {
+  position: absolute;
+  left: -12px;
+  top: -140px;
+  width: 0;
+  height: 0;
+  border-left: 12px solid transparent;
+  border-right: 12px solid transparent;
+  border-bottom: 18px solid var(--danger);
+  filter: drop-shadow(0 0 6px rgba(255, 77, 94, 0.8));
+}
+
+@keyframes hud-damage-indicator-fade {
+  0%, 60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ---- kill confirmation banner (upper-center) --------------------------- */
+
+.hud-kill-banner {
+  position: absolute;
+  top: 22%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  opacity: 0;
+}
+
+.hud-kill-banner--show {
+  animation: hud-kill-banner-pop 1.4s ease-out forwards;
+}
+
+.hud-kill-banner-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--danger);
+  text-shadow: 0 0 10px rgba(255, 77, 94, 0.7);
+}
+
+.hud-kill-banner-streak {
+  margin-top: 0.2rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--warn);
+  text-shadow: 0 0 10px rgba(255, 178, 63, 0.7);
+}
+
+@keyframes hud-kill-banner-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.75);
+  }
+  15% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+  25% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
 /* ---- shield / health (bottom-left) ------------------------------------ */
 
 .hud-vitals {

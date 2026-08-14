@@ -1,11 +1,13 @@
 import * as THREE from 'three'
 import type { ServerMsg, SnapPlayer, Vec3, WeaponId } from '@riftlane/shared'
-import { EYE_HEIGHT, MAPS, MOVE_SPEED, WEAPONS } from '@riftlane/shared'
+import { EYE_HEIGHT, MAPS, MOVE_SPEED, clamp } from '@riftlane/shared'
 import { createScene, type SceneCtx } from './render/scene'
 import { buildMap } from './render/mapMesh'
 import { makeSoldier, updateSoldier } from './render/soldier'
 import { EffectsSystem } from './render/effects'
+import { buildViewmodel, setViewmodelFlare } from './render/viewmodel'
 import { disposeObject3D } from './render/dispose'
+import { ShakeRig, bearing, decayTo } from './render/feel'
 import type { InputManager } from './input'
 import type { Net } from './net'
 import { ClientPrediction } from './predict'
@@ -15,12 +17,50 @@ import { audioEngine, type SoundName } from './audio'
 type MatchStartMsg = Extract<ServerMsg, { t: 'match_start' }>
 type SnapshotMsg = Extract<ServerMsg, { t: 'snapshot' }>
 
-const VIEWMODEL_REST = { x: 0.32, y: -0.28, z: -0.55 }
+const VIEWMODEL_REST = { x: 0.27, y: -0.25, z: -0.62 }
 const KICK_RECOVER_RATE = 8 // 1/s -- ~125ms to fully recover
 const KICK_DEPTH = 0.08
 const BOB_AMP_Y = 0.015
 const BOB_AMP_X = 0.01
 const MAX_DT = 0.1
+
+// ---- game-feel tuning (client-only, never touches shared/ sim state) ------
+
+const FOV_MAX_BUMP = 6 // degrees, at full MOVE_SPEED
+const FOV_LERP_TAU = 0.15 // seconds
+const LANDING_RECOVER_RATE = 5 // 1/s, same convention as KICK_RECOVER_RATE above
+const LANDING_DIP_DEPTH = 0.16 // meters, camera Y dip on landing
+const LANDING_DIP_VIEWMODEL_SCALE = 0.6
+const LANDING_FALL_VEL = -4.5 // m/s downward velocity that counts as "falling"
+const LANDING_SETTLE_VEL = 0.6 // |vel.y| this small right after a fast fall means the fall was arrested
+const LANDING_TRAUMA = 0.25
+const DAMAGE_TRAUMA = 0.45
+const EXPLOSION_TRAUMA_MAX = 0.75
+const EXPLOSION_TRAUMA_RADIUS = 9 // meters -- cosmetic shake falloff only, not the sim's real splash radius
+const DAMAGE_ATTRIBUTION_RADIUS = 10 // meters -- "plausible source" radius for the damage-direction indicator
+const RECOIL_DECAY_TAU = 0.09 // seconds
+const RECOIL_MAX = 0.09 // radians, hard cap so rapid-fire weapons can't stack recoil into a wild swing
+const SWAY_SMOOTH_TAU = 0.12
+const SWAY_SCALE = 0.045
+const SWAY_MAX = 0.02 // meters
+
+/** Relative fire-kick severity per weapon (0..1ish), scales both the
+ * screenshake trauma and the recoil pitch kick -- one table instead of two
+ * so a weapon can't have loud shake but no recoil or vice versa. */
+const FIRE_KICK_SEVERITY: Record<WeaponId, number> = {
+  pulse_smg: 0.4,
+  sidearm: 0.35,
+  triad_rifle: 0.55,
+  scattergun: 0.85,
+  railspike: 0.75,
+  ion_charger: 0.6,
+  boomtube: 1,
+  swarm_pod: 0.6,
+  arc_blade: 0.5,
+  grav_maul: 0.85,
+}
+const FIRE_TRAUMA_BASE = 0.22
+const FIRE_RECOIL_BASE = 0.03 // radians
 
 // Audio-only heuristics: teleport/launchpad have no SimEvent on the wire, so
 // both are detected by diffing raw player state between consecutive
@@ -72,6 +112,17 @@ export class Game {
   private kickT = 1 // 1 = fully recovered, 0 = just fired
   private hud: Hud | null = null
 
+  // ---- game-feel state (client-only juice, see feel.ts) -------------------
+  private shakeRig = new ShakeRig()
+  private recoilPitch = 0 // radians, decays exponentially toward 0
+  private baseFov = 75
+  private fovBump = 0 // additive degrees, lerped from horizontal speed
+  private landingDipT = 1 // 1 = recovered, 0 = just landed
+  private prevLookYaw = 0
+  private prevLookPitch = 0
+  private swayX = 0
+  private swayY = 0
+
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly input: InputManager,
@@ -89,13 +140,13 @@ export class Game {
 
     const sceneCtx = createScene(this.canvas)
     this.sceneCtx = sceneCtx
-    this.mapGroup = buildMap(map)
+    this.mapGroup = buildMap(map, sceneCtx.materials)
     sceneCtx.scene.add(this.mapGroup)
     this.effects = new EffectsSystem(sceneCtx.scene, sceneCtx.camera)
 
     for (const p of msg.players) {
       if (p.id === msg.yourId) continue // v1: no own body, first-person only
-      const soldier = makeSoldier(p.team)
+      const soldier = makeSoldier(p.team, sceneCtx.materials)
       sceneCtx.scene.add(soldier)
       this.soldiers.set(p.id, soldier)
     }
@@ -107,6 +158,18 @@ export class Game {
     this.bobPhase = 0
     this.kickT = 1
     this.hud = new Hud()
+
+    this.shakeRig = new ShakeRig()
+    this.recoilPitch = 0
+    this.baseFov = sceneCtx.camera.fov
+    this.fovBump = 0
+    this.landingDipT = 1
+    const look = this.input.getLookAngles()
+    this.prevLookYaw = look.yaw
+    this.prevLookPitch = look.pitch
+    this.swayX = 0
+    this.swayY = 0
+
     this.lastTime = performance.now()
     this.raf = requestAnimationFrame(this.loop)
   }
@@ -116,6 +179,112 @@ export class Game {
     this.latestSnapshot = msg
     this.prediction.onSnapshot(msg)
     this.playSnapshotAudio(msg, prevSnap)
+    this.detectLocalHit(msg, prevSnap)
+    this.detectDamageTaken(msg, prevSnap)
+    this.detectLanding(msg, prevSnap)
+  }
+
+  /**
+   * Best-effort "did my last shot damage someone" detector. The wire
+   * protocol's 'shot' SimEvent carries no target (server hit resolution is
+   * silent -- see shared/src/sim.ts's stepFire, which applies damage
+   * directly without pushing an event), so this diffs every other player's
+   * health+shield against the previous snapshot and only fires when the
+   * local player fired this tick AND exactly one other player's total HP
+   * dropped. Two shooters landing hits in the same 20Hz tick, or a miss
+   * that happens to coincide with someone else's hit, will occasionally
+   * misattribute or (for >1 simultaneous victim) suppress the marker --
+   * acceptable since this is cosmetic-only feedback with no effect on sim
+   * state, same shape as the existing teleport/launchpad heuristics below.
+   */
+  private detectLocalHit(msg: SnapshotMsg, prevSnap: SnapshotMsg | null): void {
+    if (!prevSnap || !this.localId) return
+    if (!msg.events.some((ev) => ev.type === 'shot' && ev.playerId === this.localId)) return
+
+    const prevById = new Map(prevSnap.players.map((p) => [p.id, p]))
+    let hitId: string | null = null
+    let ambiguous = false
+    for (const p of msg.players) {
+      if (p.id === this.localId) continue
+      const prev = prevById.get(p.id)
+      if (!prev) continue
+      if (p.shield + p.health < prev.shield + prev.health - 0.01) {
+        if (hitId !== null) {
+          ambiguous = true
+          break
+        }
+        hitId = p.id
+      }
+    }
+    if (!hitId || ambiguous) return
+
+    // A kill on this same victim already gets the stronger marker/sound
+    // from Hud.processEvents' kill branch -- don't double-fire.
+    const alreadyKilled = msg.events.some((ev) => ev.type === 'kill' && ev.victimId === hitId && ev.killerId === this.localId)
+    if (alreadyKilled) return
+
+    this.hud?.showHitMarker(false)
+  }
+
+  /**
+   * Diffs the local player's own health+shield to detect "I just got hit",
+   * then makes a best-effort guess at the direction using whatever's on the
+   * wire this tick: an 'explosion' event (has a real position) if there's
+   * exactly one within plausible splash range, else a single enemy 'shot'
+   * event (no target field, so >1 shooter this tick means the direction is
+   * unknowable and is skipped rather than guessed wrong). No SimEvent ties
+   * damage to its source at all -- this is the mirror of detectLocalHit's
+   * heuristic above.
+   */
+  private detectDamageTaken(msg: SnapshotMsg, prevSnap: SnapshotMsg | null): void {
+    if (!prevSnap || !this.localId) return
+    const prevLocal = prevSnap.players.find((p) => p.id === this.localId)
+    const curLocal = msg.players.find((p) => p.id === this.localId)
+    if (!prevLocal || !curLocal || !curLocal.alive) return
+    if (curLocal.shield + curLocal.health >= prevLocal.shield + prevLocal.health - 0.01) return
+
+    this.shakeRig.addTrauma(DAMAGE_TRAUMA)
+    audioEngine.play('damage_taken')
+
+    let explosionPos: Vec3 | null = null
+    let explosionCount = 0
+    let shotShooterId: string | null = null
+    let shotCount = 0
+    for (const ev of msg.events) {
+      if (ev.type === 'explosion') {
+        explosionCount++
+        const dist = Math.hypot(ev.pos.x - curLocal.pos.x, ev.pos.y - curLocal.pos.y, ev.pos.z - curLocal.pos.z)
+        if (dist <= DAMAGE_ATTRIBUTION_RADIUS) explosionPos = ev.pos
+      } else if (ev.type === 'shot' && ev.playerId !== this.localId) {
+        shotCount++
+        shotShooterId = ev.playerId
+      }
+    }
+
+    let sourcePos: Vec3 | null = null
+    if (explosionCount === 1 && explosionPos) {
+      sourcePos = explosionPos
+    } else if (shotCount === 1 && shotShooterId) {
+      sourcePos = msg.players.find((p) => p.id === shotShooterId)?.pos ?? null
+    }
+
+    const bearingRad = sourcePos ? bearing(curLocal.pos, curLocal.yaw, sourcePos) : null
+    this.hud?.notifyDamageTaken(bearingRad)
+  }
+
+  /** Landing-from-a-fall heuristic: a fast downward velocity last snapshot
+   * arrested to near-zero this snapshot. SnapPlayer carries `vel` but not
+   * `grounded` (see shared/src/protocol.ts), so this diffs vel.y instead --
+   * same diff-based shape as the existing launchpad detection below. */
+  private detectLanding(msg: SnapshotMsg, prevSnap: SnapshotMsg | null): void {
+    if (!prevSnap || !this.localId) return
+    const prevLocal = prevSnap.players.find((p) => p.id === this.localId)
+    const curLocal = msg.players.find((p) => p.id === this.localId)
+    if (!prevLocal || !curLocal || !curLocal.alive) return
+    if (prevLocal.vel.y < LANDING_FALL_VEL && Math.abs(curLocal.vel.y) < LANDING_SETTLE_VEL) {
+      this.landingDipT = 0
+      this.shakeRig.addTrauma(LANDING_TRAUMA)
+    }
   }
 
   /**
@@ -197,14 +366,29 @@ export class Game {
     for (const inp of inputs) this.net.send({ t: 'input', input: inp })
     this.prediction.tick(dt)
 
+    // Decay independent of snapshot arrival so recovery stays smooth even
+    // if a snapshot is dropped -- both follow the repo's existing kickT
+    // convention (0 = just triggered, 1 = fully recovered).
+    this.recoilPitch = decayTo(this.recoilPitch, 0, dt, RECOIL_DECAY_TAU)
+    this.landingDipT = Math.min(1, this.landingDipT + dt * LANDING_RECOVER_RATE)
+
     const snap = this.latestSnapshot
     if (snap) {
       const localSnap = snap.players.find((p) => p.id === this.localId)
       const pose = this.localPose()
       if (pose) {
         ctx.camera.position.set(pose.pos.x, pose.pos.y + EYE_HEIGHT, pose.pos.z)
-        ctx.camera.rotation.x = pose.pitch
+        ctx.camera.rotation.x = pose.pitch - this.recoilPitch
         ctx.camera.rotation.y = pose.yaw + Math.PI
+        // Screenshake is the only thing that ever writes rotation.z; reset
+        // it before applying so ShakeRig's additive offset never
+        // accumulates onto a stale value from a previous frame (position.x
+        // /y and rotation.x/y are safe because they're fully overwritten
+        // above every frame -- z is the one component nothing else sets).
+        ctx.camera.rotation.z = 0
+        const landingFrac = 1 - this.landingDipT
+        ctx.camera.position.y -= landingFrac * landingFrac * LANDING_DIP_DEPTH
+        this.shakeRig.update(dt, ctx.camera)
       }
 
       for (const remote of this.remotePoses()) {
@@ -231,7 +415,22 @@ export class Game {
 
       if (localSnap) {
         for (const ev of snap.events) {
-          if (ev.type === 'shot' && ev.playerId === this.localId) this.kickT = 0
+          if (ev.type === 'shot' && ev.playerId === this.localId) {
+            this.kickT = 0
+            const severity = FIRE_KICK_SEVERITY[ev.weapon]
+            this.shakeRig.addTrauma(FIRE_TRAUMA_BASE * severity)
+            this.recoilPitch = Math.min(RECOIL_MAX, this.recoilPitch + FIRE_RECOIL_BASE * severity)
+          } else if (ev.type === 'explosion') {
+            const dist = Math.hypot(
+              ev.pos.x - localSnap.pos.x,
+              ev.pos.y - localSnap.pos.y,
+              ev.pos.z - localSnap.pos.z
+            )
+            if (dist < EXPLOSION_TRAUMA_RADIUS) {
+              const falloff = 1 - dist / EXPLOSION_TRAUMA_RADIUS
+              this.shakeRig.addTrauma(EXPLOSION_TRAUMA_MAX * falloff * falloff)
+            }
+          }
         }
         this.updateViewmodel(localSnap, dt)
       }
@@ -241,7 +440,7 @@ export class Game {
 
     this.hud?.update(dt, snap, this.localId, this.input.scoreboardHeld())
 
-    effects.tickMapPulse(this.mapGroup)
+    effects.tickMapPulse(this.mapGroup, dt)
     effects.update(dt)
 
     ctx.renderer.render(ctx.scene, ctx.camera)
@@ -261,11 +460,11 @@ export class Game {
   // ---- viewmodel --------------------------------------------------------------
 
   private updateViewmodel(local: SnapPlayer, dt: number): void {
-    if (!this.viewmodelRig) return
+    if (!this.sceneCtx || !this.viewmodelRig) return
     const weaponId = local.weapons[local.activeWeapon]
     let mesh = this.viewmodels.get(weaponId)
     if (!mesh) {
-      mesh = buildViewmodelMesh(weaponId)
+      mesh = buildViewmodel(weaponId, this.sceneCtx.materials)
       this.viewmodels.set(weaponId, mesh)
     }
     if (this.activeViewmodel !== mesh) {
@@ -283,7 +482,33 @@ export class Game {
     this.kickT = Math.min(1, this.kickT + dt * KICK_RECOVER_RATE)
     const kick = (1 - this.kickT) * KICK_DEPTH
 
-    mesh.position.set(bobX, bobY, kick)
+    // FOV widens with horizontal speed -- lerped, not snapped, and capped at
+    // FOV_MAX_BUMP so a full sprint never reads as a lens distortion.
+    this.fovBump = decayTo(this.fovBump, speedFrac * FOV_MAX_BUMP, dt, FOV_LERP_TAU)
+    this.sceneCtx.camera.fov = this.baseFov + this.fovBump
+    this.sceneCtx.camera.updateProjectionMatrix()
+
+    // View sway: a small, heavily-damped offset from how fast the player is
+    // turning, sourced from InputManager's continuous look angles (not
+    // `local.yaw/pitch`, which only update at the 20Hz snapshot rate and
+    // would make the sway visibly step).
+    const look = this.input.getLookAngles()
+    const twoPi = Math.PI * 2
+    const yawDelta = ((look.yaw - this.prevLookYaw + Math.PI) % twoPi + twoPi) % twoPi - Math.PI
+    const pitchDelta = look.pitch - this.prevLookPitch
+    this.prevLookYaw = look.yaw
+    this.prevLookPitch = look.pitch
+    const rate = dt > 1e-4 ? 1 / dt : 0
+    const targetSwayX = clamp(-yawDelta * rate * SWAY_SCALE, -SWAY_MAX, SWAY_MAX)
+    const targetSwayY = clamp(pitchDelta * rate * SWAY_SCALE, -SWAY_MAX, SWAY_MAX)
+    this.swayX = decayTo(this.swayX, targetSwayX, dt, SWAY_SMOOTH_TAU)
+    this.swayY = decayTo(this.swayY, targetSwayY, dt, SWAY_SMOOTH_TAU)
+
+    const landingFrac = 1 - this.landingDipT
+    const landingDip = landingFrac * landingFrac * LANDING_DIP_DEPTH * LANDING_DIP_VIEWMODEL_SCALE
+
+    mesh.position.set(bobX + this.swayX, bobY + this.swayY - landingDip, kick)
+    setViewmodelFlare(mesh, this.kickT)
   }
 
   /**
@@ -337,59 +562,4 @@ export class Game {
     this.prevShields.clear()
     this.latestSnapshot = null
   }
-}
-
-/** Simple procedural low-poly weapon mesh, varied by WeaponDef.kind so all
- * ten weapon ids read as visually distinct without ten hand-authored
- * models: power_melee gets a blade, projectile/charge weapons get a fat
- * barrel, everything else a rifle-shaped barrel. */
-function buildViewmodelMesh(id: WeaponId): THREE.Group {
-  const def = WEAPONS[id]
-  const group = new THREE.Group()
-  const hue = weaponHue(id)
-  const color = new THREE.Color().setHSL(hue, 0.55, 0.45).getHex()
-  const mat = new THREE.MeshLambertMaterial({ color })
-  const darkMat = new THREE.MeshLambertMaterial({ color: 0x1a1d24 })
-
-  if (def.kind === 'power_melee') {
-    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.3), darkMat)
-    handle.position.z = 0.1
-    group.add(handle)
-    const blade = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.5, 6), mat)
-    blade.rotation.x = Math.PI / 2
-    blade.position.z = -0.25
-    group.add(blade)
-    return group
-  }
-
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.35), darkMat)
-  group.add(body)
-  const isFat = def.kind === 'projectile' || def.kind === 'charge'
-  const barrelLen = isFat ? 0.4 : 0.28
-  const barrelRad = isFat ? 0.05 : 0.025
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(barrelRad, barrelRad, barrelLen, 8), mat)
-  barrel.rotation.x = Math.PI / 2
-  barrel.position.z = -0.3
-  group.add(barrel)
-  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.15, 0.06), darkMat)
-  grip.position.set(0, -0.1, 0.1)
-  group.add(grip)
-  return group
-}
-
-function weaponHue(id: WeaponId): number {
-  const ids: WeaponId[] = [
-    'pulse_smg',
-    'triad_rifle',
-    'railspike',
-    'boomtube',
-    'scattergun',
-    'sidearm',
-    'swarm_pod',
-    'ion_charger',
-    'arc_blade',
-    'grav_maul',
-  ]
-  const idx = ids.indexOf(id)
-  return idx / ids.length
 }

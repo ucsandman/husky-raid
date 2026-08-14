@@ -1,5 +1,6 @@
 import type { EquipmentId, FlagState, ServerMsg, SnapPlayer, Team, WeaponId } from '@riftlane/shared'
 import { MAX_HEALTH, MAX_SHIELD, RESPAWN_DELAY, WEAPONS, clamp } from '@riftlane/shared'
+import { audioEngine } from '../audio'
 import './hud.css'
 
 type SnapshotMsg = Extract<ServerMsg, { t: 'snapshot' }>
@@ -8,8 +9,16 @@ const HEALTH_PIP_COUNT = 6
 const CROSSHAIR_KICK_PX = 6
 const CROSSHAIR_RECOVER_RATE = 6 // 1/s
 const HITMARKER_MS = 250
+const HITMARKER_KILL_MS = 420
 const KILLFEED_MS = 4000
 const KILLFEED_MAX = 8
+const KILL_BANNER_MS = 1400
+const KILL_STREAK_WINDOW = 4.5 // seconds; resets the streak counter if exceeded between kills
+const KILL_STREAK_LABEL: Record<number, string> = { 2: 'DOUBLE ELIMINATION', 3: 'TRIPLE ELIMINATION' }
+const DAMAGE_PULSE_MS = 450
+const LOW_HEALTH_FRAC = 0.25
+const HEARTBEAT_INTERVAL_MAX = 1.1 // seconds, at exactly the 25% threshold
+const HEARTBEAT_INTERVAL_MIN = 0.55 // seconds, at 0 health -- faster as health drains
 
 const TEAM_NAME: Record<Team, string> = { 0: 'Cobalt', 1: 'Ember' }
 const EQUIP_GLYPH: Record<EquipmentId, string> = { grapple: 'G', repulsor: 'R', camo: 'C' }
@@ -86,6 +95,12 @@ export class Hud {
   private readonly root: HTMLDivElement
   private readonly crosshair: HTMLDivElement
   private readonly hitmarker: HTMLDivElement
+  private readonly killBanner: HTMLDivElement
+  private readonly killBannerTitle: HTMLDivElement
+  private readonly killBannerStreak: HTMLDivElement
+  private readonly damageVignette: HTMLDivElement
+  private readonly damageIndicator: HTMLDivElement
+  private readonly lowHealthVignette: HTMLDivElement
   private readonly shieldFill: HTMLDivElement
   private readonly healthPips: HTMLDivElement[] = []
   private readonly weaponRows: [WeaponRowEls, WeaponRowEls]
@@ -114,9 +129,24 @@ export class Hud {
   private prevAlive = true
   private respawnRemaining = 0
   private crosshairKickT = 1 // 1 = fully recovered, 0 = just fired
+  private killStreakCount = 0
+  private killStreakRemaining = 0
+  private heartbeatRemaining = 0
 
   constructor() {
     this.root = el('div', 'hud')
+
+    this.lowHealthVignette = el('div', 'hud-vignette hud-vignette--low-health')
+    this.damageVignette = el('div', 'hud-vignette hud-vignette--damage')
+    this.damageIndicator = el('div', 'hud-damage-indicator')
+    this.damageIndicator.appendChild(el('div', 'hud-damage-indicator-arrow'))
+    this.root.append(this.lowHealthVignette, this.damageVignette, this.damageIndicator)
+
+    this.killBanner = el('div', 'hud-kill-banner')
+    this.killBannerTitle = el('div', 'hud-kill-banner-title')
+    this.killBannerStreak = el('div', 'hud-kill-banner-streak')
+    this.killBanner.append(this.killBannerTitle, this.killBannerStreak)
+    this.root.appendChild(this.killBanner)
 
     this.crosshair = this.buildCrosshair()
     this.hitmarker = el('div', 'hud-hitmarker')
@@ -212,7 +242,15 @@ export class Hud {
       this.updateLoadout(localSnap)
       this.updateFlags(localSnap, snap.flags)
       this.updateRespawn(localSnap, dt)
+      this.updateLowHealthCue(localSnap, dt)
       this.root.classList.toggle('hud--camo', localSnap.camo)
+    } else {
+      this.lowHealthVignette.style.opacity = '0'
+    }
+
+    if (this.killStreakRemaining > 0) {
+      this.killStreakRemaining -= dt
+      if (this.killStreakRemaining <= 0) this.killStreakCount = 0
     }
 
     this.updateScoreStrip(snap.scores, snap.timeLeft)
@@ -293,7 +331,11 @@ export class Hud {
         if (!isSelfKill) this.bumpTally(ev.killerId, 'kills', players)
         this.bumpTally(ev.victimId, 'deaths', players)
         this.addKillFeedEntry(ev.killerId, ev.victimId, ev.weapon, localId, isSelfKill)
-        if (!isSelfKill && ev.killerId === localId) this.showHitMarker()
+        if (!isSelfKill && ev.killerId === localId) {
+          this.showHitMarker(true)
+          const victimName = this.nameCache.get(ev.victimId) ?? '???'
+          this.showKillBanner(victimName)
+        }
       } else if (ev.type === 'capture') {
         this.bumpTally(ev.playerId, 'captures', players)
       } else if (ev.type === 'shot' && ev.playerId === localId) {
@@ -341,13 +383,72 @@ export class Hud {
     this.pendingTimeouts.add(t)
   }
 
-  private showHitMarker(): void {
+  /** `kill` picks the stronger, longer-lived marker style + sound; a plain
+   * damaging (non-lethal) hit uses the regular one. Public so game.ts can
+   * fire it for a diffed "local shot damaged someone" hit -- see
+   * game.ts's detectLocalHit() for why that has to be a heuristic (no
+   * SimEvent on the wire distinguishes a hit from a miss). */
+  showHitMarker(kill: boolean): void {
     this.hitmarker.classList.add('hud-hitmarker--show')
-    const t = setTimeout(() => {
-      this.hitmarker.classList.remove('hud-hitmarker--show')
-      this.pendingTimeouts.delete(t)
-    }, HITMARKER_MS)
+    this.hitmarker.classList.toggle('hud-hitmarker--kill', kill)
+    audioEngine.play(kill ? 'hit_kill' : 'hit_tick')
+    const t = setTimeout(
+      () => {
+        this.hitmarker.classList.remove('hud-hitmarker--show')
+        this.pendingTimeouts.delete(t)
+      },
+      kill ? HITMARKER_KILL_MS : HITMARKER_MS
+    )
     this.pendingTimeouts.add(t)
+  }
+
+  private showKillBanner(victimName: string): void {
+    this.killStreakCount += 1
+    this.killStreakRemaining = KILL_STREAK_WINDOW
+
+    this.killBannerTitle.textContent = `ELIMINATED ${victimName}`
+    this.killBannerStreak.textContent = KILL_STREAK_LABEL[this.killStreakCount] ?? (this.killStreakCount >= 4 ? `${this.killStreakCount}x ELIMINATION STREAK` : '')
+
+    this.killBanner.classList.remove('hud-kill-banner--show')
+    // Force a reflow so re-triggering the CSS animation on a rapid second
+    // kill actually restarts it instead of being a no-op (class already set).
+    void this.killBanner.offsetWidth
+    this.killBanner.classList.add('hud-kill-banner--show')
+    const t = setTimeout(() => {
+      this.killBanner.classList.remove('hud-kill-banner--show')
+      this.pendingTimeouts.delete(t)
+    }, KILL_BANNER_MS)
+    this.pendingTimeouts.add(t)
+  }
+
+  /** Called from game.ts when the local player's own health+shield just
+   * dropped. `bearingRad` is the attacker's direction relative to the
+   * player's facing (0 = ahead), or null when game.ts couldn't reliably
+   * attribute a single source this tick (see game.ts's detectDamageTaken()
+   * -- the wire protocol has no per-hit attacker field, only 'shot' events
+   * with no target and 'explosion' events with a position, so direction is
+   * a best-effort heuristic, not always available). */
+  notifyDamageTaken(bearingRad: number | null): void {
+    audioEngine.play('damage_taken')
+    this.damageVignette.classList.remove('hud-vignette--pulse')
+    void this.damageVignette.offsetWidth
+    this.damageVignette.classList.add('hud-vignette--pulse')
+    const t = setTimeout(() => {
+      this.damageVignette.classList.remove('hud-vignette--pulse')
+      this.pendingTimeouts.delete(t)
+    }, DAMAGE_PULSE_MS)
+    this.pendingTimeouts.add(t)
+
+    if (bearingRad === null) return
+    this.damageIndicator.style.transform = `rotate(${bearingRad}rad)`
+    this.damageIndicator.classList.remove('hud-damage-indicator--show')
+    void this.damageIndicator.offsetWidth
+    this.damageIndicator.classList.add('hud-damage-indicator--show')
+    const t2 = setTimeout(() => {
+      this.damageIndicator.classList.remove('hud-damage-indicator--show')
+      this.pendingTimeouts.delete(t2)
+    }, DAMAGE_PULSE_MS)
+    this.pendingTimeouts.add(t2)
   }
 
   // ---- per-frame local-player panels --------------------------------------
@@ -417,6 +518,27 @@ export class Hud {
       this.respawnRemaining = 0
     }
     this.prevAlive = local.alive
+  }
+
+  /** Persistent red vignette that ramps in under LOW_HEALTH_FRAC health,
+   * plus a repeating heartbeat cue that speeds up as health drains toward
+   * 0. Both silence themselves once the player is dead or back above the
+   * threshold. */
+  private updateLowHealthCue(local: SnapPlayer, dt: number): void {
+    const frac = clamp(local.health / MAX_HEALTH, 0, 1)
+    if (!local.alive || frac >= LOW_HEALTH_FRAC) {
+      this.lowHealthVignette.style.opacity = '0'
+      this.heartbeatRemaining = 0
+      return
+    }
+    const severity = 1 - frac / LOW_HEALTH_FRAC // 0 at the threshold, 1 at 0 health
+    this.lowHealthVignette.style.opacity = String(0.15 + severity * 0.55)
+
+    this.heartbeatRemaining -= dt
+    if (this.heartbeatRemaining <= 0) {
+      audioEngine.play('heartbeat')
+      this.heartbeatRemaining = HEARTBEAT_INTERVAL_MAX - severity * (HEARTBEAT_INTERVAL_MAX - HEARTBEAT_INTERVAL_MIN)
+    }
   }
 
   private updateScoreStrip(scores: [number, number], timeLeft: number): void {

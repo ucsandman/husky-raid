@@ -55,3 +55,17 @@ The spec (§3) describes Grav Maul as a 4m-radius AoE slam with a 1.2s wind-up, 
 ## 2026-08-14: Field-level input sanitization at the HostedMatch.handleInput trust boundary
 
 Inbound `PlayerInput` (`server/src/match.ts` `handleInput`), the hello `name` field (`server/src/net.ts`), and `join_room`'s room `code` (`server/src/lobby.ts`) are all untrusted client JSON. Chose field-level coercion/clamping at each entry point (finite-number guards with fallbacks, range clamps, `!!` booleans, string-shape checks) over a schema-validation library: the message shapes are small and stable, and a library dependency wasn't worth it for a handful of fields. `handleInput` in particular matters most -- an unclamped `yaw`/`pitch` of `Infinity` would propagate as `NaN` through `viewDir`'s `sin`/`cos` into the whole deterministic sim.
+
+## 2026-08-14: Solo Quick Play now starts a bot-filled match after the 10s wait
+
+Quick Play originally required two queued humans to have waited out `QUEUE_MAX_WAIT_MS` before a match started, so a lone player queued forever -- contradicting the README promise that "a match can start with as few as one human player" (which only Create Room honored). Changed `Lobby.checkQueue` to start a match once ANY queued player has waited 10s (`waitedCount >= 1`); bots fill the remaining slots as they already did. `QUEUE_MIN_HUMANS` removed as unused. The old behavior was asserted by an explicit test ("does not start a bot-only match for a lone queued human"), so this is a deliberate reversal, not a bug fix: for a game whose bots are good enough to carry a match, an infinite queue is a worse player promise than a bots match.
+
+## 2026-08-14: Procedural-only premium render pass, merged/instanced world
+
+The client's visual upgrade uses zero external assets and no new dependencies: every texture is drawn on a canvas at build-of-scene time (`client/src/render/materials.ts`), every model is authored from Three.js primitives, and the sky is a gradient shader dome plus two star shells (`client/src/render/sky.ts`). Rejected: generated GLB/texture assets -- they would add a download step, an asset pipeline and API credentials to what is otherwise a `npm install && npm run dev` repo.
+
+Draw-call budget is held by merging and instancing rather than by cutting detail. `mapMesh.ts` merges every deck, trim, lane strip and cover block into one mesh per material role via `BufferGeometryUtils.mergeGeometries`, instances the perimeter pylons, rift crystals and the three backdrop tower rings, and `soldier.ts` merges each player down to five meshes. Worst measured active-play frame: 131 calls / 18k triangles desktop, 60 calls / 7.5k triangles at 390x844.
+
+Materials and their textures are owned by one per-match `MaterialLibrary` created in `createScene()` and disposed from `Game.teardown()`. Module-level caching was rejected: `render/dispose.ts` frees a material's textures when it walks the scene, so a cache outliving a match would hand the next match already-disposed GPU objects. For the same reason, anything whose opacity is animated per-prop (beacon pillars, jump-pad shockwaves) gets its own material instead of a shared library role, and pooled projectile meshes are detached rather than disposed on despawn.
+
+`window.__riftlaneRenderInfo()` is installed by `createScene()` and removed on teardown; it returns calls/triangles/geometries/textures/programs plus DPR, shadow map size and exposure for QA and screenshot runs.

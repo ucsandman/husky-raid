@@ -11,7 +11,6 @@ const ROOM_CODE_LENGTH = 4
 const MAP_ROTATION = ['gutter', 'hairpin']
 const ROOM_SIZE = TEAM_SIZE * 2
 
-const QUEUE_MIN_HUMANS = 2
 const QUEUE_MAX_WAIT_MS = 10_000
 const QUEUE_INSTANT_HUMANS = ROOM_SIZE
 
@@ -227,7 +226,9 @@ export class Lobby {
     if (this.queue.length === 0) return
     const now = this.nowFn()
     const waitedCount = this.queue.filter((q) => now - q.joinedAt >= QUEUE_MAX_WAIT_MS).length
-    const shouldStart = this.queue.length >= QUEUE_INSTANT_HUMANS || waitedCount >= QUEUE_MIN_HUMANS
+    // Bots fill empty slots, so anyone who has waited out the timer gets a
+    // match even alone (README: "as few as one human player").
+    const shouldStart = this.queue.length >= QUEUE_INSTANT_HUMANS || waitedCount >= 1
     if (!shouldStart) return
 
     const entries = this.queue.splice(0, ROOM_SIZE)
