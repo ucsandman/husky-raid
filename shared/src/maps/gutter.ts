@@ -20,17 +20,21 @@ export const gutter: GameMap = {
     { min: { x: -4, y: -1, z: -20 }, max: { x: -3, y: 0, z: -16 } }, // 5 gutter bridge, z=-18
     { min: { x: -4, y: -1, z: 16 }, max: { x: -3, y: 0, z: 20 } }, // 6 gutter bridge, z=+18
     // cover boxes, ~1m tall, staggered every ~6 units down the lane.
-    // Box 7 sits at z=-15 rather than centered on node1 (z=-18, like its
-    // z=18/node7 mirror box12 is) -- at z=-18 it sat almost exactly on the
-    // direct waypoint1->9 walk edge into the teleporter alcove (x -2.7..-1.3
-    // blocking the x -5..0 crossing line), which a simple point-seeking
-    // walker has no obstacle-avoidance steering to route around.
+    // Box 7 sits at z=-15 rather than centered on node1 (z=-18) -- at z=-18
+    // it sat almost exactly on the direct waypoint1->9 walk edge into the
+    // teleporter alcove (x -2.7..-1.3 blocking the x -5..0 crossing line),
+    // which a simple point-seeking walker has no obstacle-avoidance
+    // steering to route around. Box 12 is box 7's 180-degree-rotational
+    // mirror (x -> -x, z -> -z, per this map's point-symmetric layout) and
+    // moved to z 14.3..15.7 to match -- both must move together, or one
+    // team gets extra mid-lane cover the other doesn't. Covered by the
+    // cover-box symmetry assertion in shared/test/map.test.ts.
     { min: { x: -2.7, y: 0, z: -15.7 }, max: { x: -1.3, y: 1, z: -14.3 } }, // 7
     { min: { x: 1.3, y: 0, z: -12.7 }, max: { x: 2.7, y: 1, z: -11.3 } }, // 8
     { min: { x: -2.7, y: 0, z: -6.7 }, max: { x: -1.3, y: 1, z: -5.3 } }, // 9
     { min: { x: 1.3, y: 0, z: 5.3 }, max: { x: 2.7, y: 1, z: 6.7 } }, // 10
     { min: { x: -2.7, y: 0, z: 11.3 }, max: { x: -1.3, y: 1, z: 12.7 } }, // 11
-    { min: { x: 1.3, y: 0, z: 17.3 }, max: { x: 2.7, y: 1, z: 18.7 } }, // 12
+    { min: { x: 1.3, y: 0, z: 14.3 }, max: { x: 2.7, y: 1, z: 15.7 } }, // 12
   ],
   boxColors: [
     0x2244aa, // cobalt base

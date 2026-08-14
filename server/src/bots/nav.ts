@@ -235,11 +235,15 @@ export class Navigator {
     }
   }
 
-  steer(p: PlayerState, map: GameMap, now: number): { input: Partial<PlayerInput>; wantGrapple: boolean } {
+  steer(
+    p: PlayerState,
+    map: GameMap,
+    now: number
+  ): { input: Partial<PlayerInput>; wantGrapple: boolean; targetPos: Vec3 | null } {
     void now
 
     if (!this.goal) {
-      return { input: { forward: 0 }, wantGrapple: false }
+      return { input: { forward: 0 }, wantGrapple: false, targetPos: null }
     }
 
     if (this.path.length === 0) {
@@ -247,7 +251,7 @@ export class Navigator {
     }
 
     if (this.path.length === 0) {
-      return { input: { forward: 0 }, wantGrapple: false }
+      return { input: { forward: 0 }, wantGrapple: false, targetPos: null }
     }
 
     if (this.pathIndex > 0) {
@@ -324,6 +328,7 @@ export class Navigator {
     return {
       input: { yaw, forward, strafe: 0, jump },
       wantGrapple,
+      targetPos: { ...targetPos },
     }
   }
 }

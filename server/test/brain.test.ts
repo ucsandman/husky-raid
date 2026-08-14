@@ -41,6 +41,40 @@ describe('assignRoles: hunter', () => {
   })
 })
 
+describe('assignRoles: 3 bots + 1 human, both flags out', () => {
+  it('assigns hunter and escort, and makes the lone leftover bot a runner (not a defender)', () => {
+    const sim = new MatchSim('gutter', 8)
+
+    // Enemy carrier holding OUR flag -- triggers hunter.
+    const enemyCarrier = sim.addPlayer('enemy-carrier', 'EnemyCarrier', 1, true)
+    enemyCarrier.pos = { x: 0, y: 0, z: -10 }
+    sim.flags[0] = { state: 'carried', pos: { ...enemyCarrier.pos }, carrierId: enemyCarrier.id }
+
+    // The team's human -- carrying the enemy flag, triggering escort. Never
+    // appears in the pool passed to assignRoles (match.ts only ever scores
+    // roles for bots), so this also checks the human doesn't need a role
+    // itself to still correctly drive hunter/escort targeting.
+    const human = sim.addPlayer('human-1', 'Human', 0, false)
+    human.pos = { x: 0, y: 0, z: 20 }
+    sim.flags[1] = { state: 'carried', pos: { ...human.pos }, carrierId: human.id }
+
+    const hunterCandidate = sim.addPlayer('b-hunter', 'HunterCandidate', 0, true)
+    hunterCandidate.pos = { x: 0, y: 0, z: -9 } // nearest to enemyCarrier
+    const escortCandidate = sim.addPlayer('b-escort', 'EscortCandidate', 0, true)
+    escortCandidate.pos = { x: 0, y: 0, z: 19 } // nearest to the human carrier
+    const leftover = sim.addPlayer('b-leftover', 'Leftover', 0, true)
+    leftover.pos = { x: 0, y: 0, z: -26 } // far from both carriers
+
+    const roles = assignRoles([hunterCandidate, escortCandidate, leftover], sim)
+
+    expect(roles.get('b-hunter')).toBe('hunter')
+    expect(roles.get('b-escort')).toBe('escort')
+    expect(roles.get('b-leftover')).toBe('runner')
+    expect(roles.size).toBe(3)
+    expect([...roles.values()]).not.toContain('defender')
+  })
+})
+
 describe('BotBrain: reaction delay', () => {
   it('does not fire before reactionMs, fires after', () => {
     const sim = new MatchSim('gutter', 3)
@@ -84,6 +118,24 @@ describe('BotBrain: camo visibility', () => {
       now += TICK_DT
     }
     expect(everFired).toBe(false)
+  })
+
+  it('fires on a non-camo\'d enemy at the same 10m distance (positive control: proves the case above fails on the camo rule, not on blocked LOS)', () => {
+    const sim = new MatchSim('gutter', 9)
+    const bot = sim.addPlayer('bot-1', 'Bot', 0, true)
+    bot.pos = { x: 0, y: 0, z: -10 }
+    const enemy = sim.addPlayer('enemy-1', 'Enemy', 1, true)
+    enemy.pos = { x: 0, y: 0, z: -20 } // same 10m distance as the camo case above, no camo
+
+    const brain = new BotBrain('bot-1', DEFAULT_DIFFICULTY, 112)
+    let now = 0
+    let fired = false
+    while (now < 1) {
+      const input = brain.think(sim, sim.map, 'hunter', now)
+      if (input.fire) fired = true
+      now += TICK_DT
+    }
+    expect(fired).toBe(true)
   })
 
   it('targets a camo\'d enemy within 4m', () => {
@@ -170,5 +222,15 @@ describe('BotBrain: full 8-bot match', () => {
     }
 
     expect(captured).toBe(true)
+    // Guards against a silent regression to "one capture right before the
+    // clock runs out": the match must actually reach a decisive conclusion
+    // (a team hitting CAPTURES_TO_WIN) within the 5-minute cap, not merely
+    // produce a single capture event somewhere in a near-300s match.
+    // sim.phase only becomes 'ended' here via CAPTURES_TO_WIN -- timeLeft
+    // (seeded from MATCH_TIME=480) can't reach 0 within our 300s loop, so
+    // this is unambiguous. Empirically the seeded match reaches a 3-0
+    // sweep by ~t=89s, comfortably inside the window.
+    expect(sim.phase).toBe('ended')
+    expect(now).toBeLessThan(maxTime)
   })
 })

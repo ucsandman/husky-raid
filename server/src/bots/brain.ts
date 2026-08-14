@@ -45,6 +45,18 @@ const BRAIN = {
   /** Only push a new goal to the Navigator when it moved more than this far,
    * so a moving target (e.g. enemy flag carrier) doesn't force a full re-path every tick. */
   GOAL_REFRESH_DIST: 3,
+  /** Extra distance added past the target's own range on LOS raycasts, so a
+   * shot aimed exactly at the target's distance still registers a hit
+   * instead of coming up just short on floating-point rounding. */
+  RAYCAST_OVERSHOOT: 0.1,
+  /** Minimum pitch (radians, positive = up) on a grenade lob aim, so a
+   * cluster at the same height or below the bot still gets an arc instead
+   * of a flat, gravity-dropped throw. */
+  GRENADE_LOB_MIN_PITCH: 0.15,
+  /** Cosine of the incoming-projectile/bot angle above which a boomtube
+   * round counts as "approaching" (roughly a 70-degree half-cone) and
+   * triggers the repulsor, rather than one merely passing nearby. */
+  REPULSOR_APPROACH_COS: 0.3,
 } as const
 
 function eyePos(p: PlayerState): Vec3 {
@@ -136,7 +148,7 @@ function findVisibleTarget(
     if (enemy.camoUntil > now && dist > BRAIN.CAMO_VISIBLE_DIST) continue
 
     const dir = scale(toTarget, 1 / dist)
-    const hit = raycast(eye, dir, dist + 0.1, map.boxes, allPlayers, bot.id, true, now)
+    const hit = raycast(eye, dir, dist + BRAIN.RAYCAST_OVERSHOOT, map.boxes, allPlayers, bot.id, true, now)
     if (hit.kind === 'player' && hit.playerId === enemy.id) {
       const dSq = dist * dist
       if (dSq < bestDistSq) {
@@ -247,15 +259,20 @@ export class BotBrain {
       fire = false
       const aim = yawPitchTo(eyePos(p), cluster)
       yaw = aim.yaw
-      pitch = Math.max(aim.pitch, 0.15)
+      pitch = Math.max(aim.pitch, BRAIN.GRENADE_LOB_MIN_PITCH)
       this.lastGrenadeAt = now
     }
 
     let equipment = false
     if (steer.wantGrapple && p.equipment === 'grapple') {
       equipment = true
-      yaw = navYaw
-      pitch = 0
+      // Aim at the actual grapple-edge waypoint, not just the nav yaw with a
+      // flat pitch -- grapple edges (e.g. hairpin's high walkway) climb, so
+      // a real pitch is needed for the raycast to actually hit the target
+      // instead of sailing level into whatever's in front of the bot.
+      const aim = steer.targetPos ? yawPitchTo(eyePos(p), steer.targetPos) : { yaw: navYaw, pitch: 0 }
+      yaw = aim.yaw
+      pitch = aim.pitch
       grenade = false
       fire = false
     } else if (p.equipment === 'repulsor' && this.shouldRepulse(p, sim, enemies)) {
@@ -302,6 +319,16 @@ export class BotBrain {
     switch (role) {
       case 'runner': {
         const enemyFlag = sim.flags[enemyTeam]
+        // Deviation from "runner always heads at the enemy flag": once a
+        // teammate is already carrying it (enemyFlag.state === 'carried'
+        // here means carried by US, since only the opposing team can pick
+        // up enemyTeam's own flag), this runner heads to the now-empty
+        // enemy flag stand rather than converging on the carrier. Ruled
+        // acceptable -- escort is the role responsible for owning/covering
+        // the carrier directly; a second runner piling onto the same
+        // position wastes offense and creates an obvious kill cluster for
+        // enemy hunters/defenders. Standing at the empty stand keeps this
+        // runner ready to grab a re-spawned or re-dropped flag instead.
         if (enemyFlag.state === 'carried') return map.flagStands[enemyTeam]
         return enemyFlag.pos
       }
@@ -384,7 +411,7 @@ export class BotBrain {
       const toBot = sub(p.pos, pr.pos)
       const dist = length(toBot)
       if (dist >= BRAIN.REPULSOR_TRIGGER_DIST || length(pr.vel) < 1e-6) continue
-      if (dot(normalize(pr.vel), normalize(toBot)) > 0.3) return true
+      if (dot(normalize(pr.vel), normalize(toBot)) > BRAIN.REPULSOR_APPROACH_COS) return true
     }
     for (const e of enemies) {
       if (!e.alive || e.weapons[e.activeWeapon] !== 'arc_blade') continue

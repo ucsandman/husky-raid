@@ -152,3 +152,64 @@ describe('Navigator.steer: unstick re-paths after displacement', () => {
     expect(Math.hypot(dx, dz)).toBeLessThanOrEqual(1.5)
   })
 })
+
+describe('Navigator.steer: jump trigger onto a raised platform', () => {
+  it('fires jump and actually reaches a 0.5m-raised platform via a walk edge', () => {
+    // Minimal fixture reproducing gutter's runner-stranding bug class: a
+    // flat lower floor (y=0 top) butts directly against a platform raised
+    // 0.5m (y=0.5 top), with no ramp, connected by a single 'walk' edge.
+    // Without Navigator's jump trigger, collideCapsule resolves the
+    // platform's footprint as a wall against a still-ground-level walker
+    // (X/Y/Z each resolved per tick using that tick's pre-jump Y), which
+    // permanently stranded every runner a few meters short of gutter's
+    // flag stand -- this fixture reproduces the same geometry in isolation.
+    const platformMap: GameMap = {
+      name: 'platform-test',
+      boxes: [
+        { min: { x: -3, y: -1, z: -10 }, max: { x: 3, y: 0, z: 0 } }, // lower floor
+        { min: { x: -3, y: 0, z: 0 }, max: { x: 3, y: 0.5, z: 10 } }, // raised platform
+      ],
+      boxColors: [0x888888, 0x2244aa],
+      launchPads: [],
+      teleporters: [],
+      spawns: [
+        [{ x: 0, y: 0, z: -9 }],
+        [{ x: 0, y: 0.5, z: 9 }],
+      ],
+      spawnYaw: [0, Math.PI],
+      flagStands: [
+        { x: 0, y: 0, z: -9 },
+        { x: 0, y: 0.5, z: 9 },
+      ],
+      deathY: -10,
+      waypoints: [
+        { pos: { x: 0, y: 0, z: -5 } }, // 0 lower-floor approach
+        { pos: { x: 0, y: 0.5, z: 3 } }, // 1 on the platform, 3m past the z=0 wall
+      ],
+      edges: [{ from: 0, to: 1, kind: 'walk' }],
+    }
+
+    const p = makeBotTestPlayer({ pos: { x: 0, y: 0, z: -8 } })
+    const nav = new Navigator()
+    nav.setGoal(platformMap.waypoints[1].pos)
+
+    let now = 0
+    let sawJump = false
+    for (let i = 0; i < 400; i++) {
+      const { input } = nav.steer(p, platformMap, now)
+      if (input.jump) sawJump = true
+      stepMovement(p, makeInput({ seq: i, ...input }), platformMap, TICK_DT)
+      now += TICK_DT
+    }
+
+    expect(sawJump).toBe(true)
+    // Actually made it onto the platform, not just attempted a jump: y
+    // close to the platform's top, and close enough to the target in XZ
+    // (the bug class was "permanently stranded a few meters short," not
+    // "never jumps at all").
+    expect(p.pos.y).toBeGreaterThan(0.4)
+    const dx2 = p.pos.x - platformMap.waypoints[1].pos.x
+    const dz2 = p.pos.z - platformMap.waypoints[1].pos.z
+    expect(Math.hypot(dx2, dz2)).toBeLessThanOrEqual(1.5)
+  })
+})

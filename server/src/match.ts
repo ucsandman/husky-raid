@@ -113,6 +113,18 @@ export class HostedMatch {
     return player
   }
 
+  /**
+   * Removes a bot (e.g. to free its slot for a joining human mid-match).
+   * Prunes its BotBrain too -- brains is private to this class, so calling
+   * sim.removePlayer directly from outside (as Lobby used to) deletes the
+   * sim-side player but leaks the Map entry here forever, since nothing
+   * else ever visits it again.
+   */
+  removeBot(id: string): void {
+    this.sim.removePlayer(id)
+    this.brains.delete(id)
+  }
+
   handleInput(id: string, input: PlayerInput): void {
     this.sim.setInput(id, input)
     if (this.humanIds.has(id)) this.ackSeqByPlayer.set(id, input.seq)

@@ -81,7 +81,13 @@ export function assignRoles(team: PlayerState[], sim: MatchSim): Map<string, Rol
     .map((p) => ({ p, runnerLean: distSq(p.pos, ourFlag.pos) - distSq(p.pos, enemyFlag.pos) }))
     .sort((a, b) => b.runnerLean - a.runnerLean)
 
-  const numRunners = Math.ceil(scored.length / 2)
+  const n = scored.length
+  // n=1: ruled a runner, not a defender -- offense biases toward captures,
+  // and a solo bot patrolling an empty base helps nobody. n>=2: explicit
+  // min() clamp (rather than relying on ceil(n/2) staying < n, which it
+  // always does, but not obviously so on a read) guarantees >=1 defender
+  // even if this formula changes later.
+  const numRunners = n === 1 ? 1 : Math.min(Math.ceil(n / 2), n - 1)
   scored.forEach(({ p }, i) => roles.set(p.id, i < numRunners ? 'runner' : 'defender'))
 
   return roles

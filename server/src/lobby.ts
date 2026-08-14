@@ -130,11 +130,10 @@ export class Lobby {
     if (player.roomCode === code) return
 
     if (room.match && !room.matchEnded) {
-      const sim = room.match.sim
-      const botId = [...sim.players.values()].find((p) => p.bot)?.id
+      const botId = [...room.match.sim.players.values()].find((p) => p.bot)?.id
       if (!botId) return this.sendError(player, 'room full')
       if (player.roomCode) this.leaveRoom(player.id, player.roomCode)
-      sim.removePlayer(botId)
+      room.match.removeBot(botId)
       room.match.addHuman(player.id, player.name)
       room.memberIds.add(player.id)
       player.roomCode = code
