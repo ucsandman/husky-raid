@@ -81,6 +81,52 @@ const JUMP_TRIGGER_DIST = 5
  * over long walk detours. */
 const TELEPORTER_EDGE_COST = 2
 
+/**
+ * XZ distance from the goal at which the bot stops pressing forward.
+ *
+ * Without a stop state steer() drives forward=1 at a point the bot already
+ * occupies, and yawTo() on a near-zero delta returns near-noise, so the bot
+ * runs full-throttle in a fresh random direction every tick and buzzes in a
+ * ~0.5m circle forever instead of arriving. Measured by
+ * scripts/bot-stuck-probe.ts before this existed: 44% of all bot-seconds on
+ * bastion and 97% on hairpin were spent doing exactly that, every one of
+ * them within 0.16m of a flag stand -- which is what a player actually sees
+ * as "the bots are stuck in the flag stand".
+ *
+ * Kept well inside FLAG_PICKUP_RADIUS (1.5), CAPTURE_RADIUS (2) and
+ * PICKUP_RADIUS (1.4), so stopping here still counts as reaching the thing
+ * the goal was pointing at.
+ */
+const GOAL_STOP_DIST = 0.9
+
+/**
+ * Ticks of no real XZ progress, while actually commanded to move, after
+ * which the bot is treated as jammed. ~1s: long enough that a legitimately
+ * slow tick (turning in place, climbing) never trips it.
+ */
+const STUCK_TICKS = 30
+
+/** XZ travel from the stuck anchor that counts as progress and re-arms the check. */
+const PROGRESS_DIST = 0.4
+
+/**
+ * Ticks of sideways strafe used to slip around whatever blocked the bot.
+ * Bots are point-seeking walkers with no obstacle avoidance, and
+ * collideCapsule just zeroes the blocked axis -- so a bot walking into a
+ * cover box stands there pressing forward until the match ends. The segment-
+ * distance UNSTICK_DIST check above cannot see this: a bot jammed *on* its
+ * own path line is 0m off that line.
+ *
+ * Runs a fixed duration rather than ending on first progress, because the
+ * sideways travel is itself progress -- ending early would ratchet the bot
+ * out 0.4m per second instead of clearing the obstacle in one move. 12 ticks
+ * with forward still held gives a 45-degree slip of ~2m sideways, enough to
+ * clear the widest cover box on any map (2m) from dead centre. Direction
+ * flips after each attempt, so a bot that strafes into a wall goes the other
+ * way next time.
+ */
+const SIDESTEP_TICKS = 12
+
 function euclid(a: Vec3, b: Vec3): number {
   return Math.sqrt(distSq(a, b))
 }
@@ -210,11 +256,26 @@ export class Navigator {
   /** Rising-edge latch + countdown for the sharp-corner full stop. */
   private inCornerZone = false
   private cornerBrakeTicksLeft = 0
+  /** Position the jam detector measures progress against -- see STUCK_TICKS. */
+  private progressAnchor: Vec3 | null = null
+  private stuckTicks = 0
+  private sidestepTicksLeft = 0
+  private sidestepDir: 1 | -1 = 1
 
   setGoal(pos: Vec3): void {
     this.goal = { ...pos }
     this.path = []
     this.pathIndex = 0
+    this.clearJamState()
+  }
+
+  /** Re-arms the jam detector. Called whenever the bot demonstrably moved,
+   * was deliberately stopped, or got a fresh path -- so only genuinely
+   * blocked ticks accumulate toward STUCK_TICKS. */
+  private clearJamState(): void {
+    this.progressAnchor = null
+    this.stuckTicks = 0
+    this.sidestepTicksLeft = 0
   }
 
   private replan(map: GameMap, p: PlayerState): void {
@@ -223,6 +284,7 @@ export class Navigator {
     const toWp = nearestWaypoint(map, this.goal)
     this.path = findPath(map, fromWp, toWp)
     this.pathIndex = 0
+    this.clearJamState()
     this.advancePastReachedNodes(map, p)
   }
 
@@ -265,13 +327,25 @@ export class Navigator {
     this.advancePastReachedNodes(map, p)
 
     const targetNode = this.path[this.pathIndex]
-    const targetPos = map.waypoints[targetNode].pos
     // pathIndex 0 is the off-graph approach leg (current position -> path[0]), which has
     // no real map edge behind it -- default to 'walk' (so jump/wantGrapple below stay off).
     const edgeKind = this.pathIndex > 0 ? findEdgeKind(map, this.path[this.pathIndex - 1], targetNode) : 'walk'
 
-    const yaw = yawTo(p.pos, targetPos)
+    // Final leg steers at the actual goal, not at the waypoint nearest it.
+    // path's last node is nearestWaypoint(goal), so without this the bot's
+    // real destination is never a target at all: a defender whose patrol
+    // point is 2m off the flag stand walks to the stand's waypoint and
+    // arrives nowhere, forever. Restricted to 'walk' so a grapple/launchpad/
+    // teleporter final edge still aims at its own waypoint -- wantGrapple
+    // below raycasts at targetPos and would otherwise fire at the goal.
+    const onFinalLeg = this.pathIndex === this.path.length - 1 && edgeKind === 'walk'
+    const targetPos = onFinalLeg ? this.goal : map.waypoints[targetNode].pos
+
     const distToTargetXZ = Math.hypot(targetPos.x - p.pos.x, targetPos.z - p.pos.z)
+    // Standing on the target, the delta fed to yawTo is near-zero and its
+    // atan2 is numerical noise -- hold the current facing instead of
+    // spinning (see GOAL_STOP_DIST).
+    const yaw = distToTargetXZ > 1e-3 ? yawTo(p.pos, targetPos) : p.yaw
     const wantGrapple = edgeKind === 'grapple'
 
     // See GOVERNOR_TRIGGER_SPEED's doc comment: pursuit-curve steering can
@@ -319,14 +393,42 @@ export class Navigator {
     }
     this.inCornerZone = inCornerZone
 
-    let forward = this.braking ? 0 : 1
+    // Arrival. Held back while the goal is still a step above the bot, so a
+    // runner stopping 0.9m short of a flag stand it has yet to mount keeps
+    // pressing (and keeps jumping) instead of parking at the foot of it.
+    const arrived = onFinalLeg && distToTargetXZ <= GOAL_STOP_DIST && targetPos.y - p.pos.y <= JUMP_HEIGHT_DELTA
+
+    let forward = arrived || this.braking ? 0 : 1
     if (this.cornerBrakeTicksLeft > 0) {
       forward = 0
       this.cornerBrakeTicksLeft--
     }
 
+    // Jam detection and recovery -- see SIDESTEP_TICKS. Only ticks where the
+    // bot was actually told to move count: a governor/corner brake holding
+    // forward at 0 is a deliberate stop, not a jam.
+    let strafe = 0
+    if (forward === 0) {
+      this.clearJamState()
+    } else {
+      if (!this.progressAnchor) this.progressAnchor = { ...p.pos }
+      if (this.sidestepTicksLeft > 0) {
+        strafe = this.sidestepDir
+        this.sidestepTicksLeft--
+        if (this.sidestepTicksLeft === 0) {
+          this.sidestepDir = this.sidestepDir === 1 ? -1 : 1
+          this.clearJamState()
+        }
+      } else if (xzDistSq(p.pos, this.progressAnchor) >= PROGRESS_DIST * PROGRESS_DIST) {
+        this.clearJamState()
+      } else if (++this.stuckTicks >= STUCK_TICKS) {
+        this.sidestepTicksLeft = SIDESTEP_TICKS
+        strafe = this.sidestepDir
+      }
+    }
+
     return {
-      input: { yaw, forward, strafe: 0, jump },
+      input: { yaw, forward, strafe, jump },
       wantGrapple,
       targetPos: { ...targetPos },
     }
