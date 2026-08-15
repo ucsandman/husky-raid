@@ -9,6 +9,7 @@
     "build": "npm --workspace client run build",
     "start": "npm --workspace server run start",
     "playtest": "node scripts/playtest-smoke.mjs",
+    "bots:probe": "tsx scripts/bot-stuck-probe.ts",
     "typecheck": "tsc -b shared server client"
   },
   "devDependencies": {

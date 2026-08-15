@@ -42,12 +42,19 @@ const BRAIN = {
   CAMO_GRAB_DIST: 15,
   /** Escort holds station this far behind its own flag carrier. */
   ESCORT_FOLLOW_DIST: 4,
-  /** Defender patrols within this radius of its own flag stand. */
+  /** Radius of the patrol ring a bot guards a position with, rather than
+   * standing on it. */
   DEFENDER_PATROL_RADIUS: 3,
-  /** How often the defender re-rolls its patrol jitter point (nav.ts oscillates
-   * ~1.5m around a static goal with no stop state, so a fixed goal alone would
-   * just have the bot vibrate in place forever -- periodic re-jitter keeps it patrolling). */
+  /** Ceiling on how long a bot holds one patrol point. The point is also
+   * re-rolled as soon as the bot reaches it (see PATROL_ARRIVE_DIST), so
+   * this only bounds the wait when something blocks the walk there. */
   DEFENDER_PATROL_RESET_INTERVAL: 4,
+  /** Distance from the current patrol point at which the next one is rolled.
+   * Navigator stops dead on its goal (GOAL_STOP_DIST), so without this a
+   * guarding bot reaches its point and then stands frozen on it -- which
+   * reads to a player as exactly the same bug as vibrating on it. Set above
+   * GOAL_STOP_DIST so the re-roll fires on arrival, not before. */
+  PATROL_ARRIVE_DIST: 1.2,
   /** Aim error halves once the bot has held continuous LOS on its target this long. */
   AIM_ERROR_HALF_LIFE: 1,
   /** Only push a new goal to the Navigator when it moved more than this far,
@@ -362,7 +369,7 @@ export class BotBrain {
         // position wastes offense and creates an obvious kill cluster for
         // enemy hunters/defenders. Standing at the empty stand keeps this
         // runner ready to grab a re-spawned or re-dropped flag instead.
-        if (enemyFlag.state === 'carried') return map.flagStands[enemyTeam]
+        if (enemyFlag.state === 'carried') return this.patrolAround(map.flagStands[enemyTeam], p, now)
         return enemyFlag.pos
       }
       case 'escort': {
@@ -382,23 +389,36 @@ export class BotBrain {
           const carrier = sim.players.get(ourFlag.carrierId)
           if (carrier) return carrier.pos
         }
-        return map.flagStands[ourTeam]
+        return this.patrolAround(map.flagStands[ourTeam], p, now)
       }
-      case 'defender': {
-        if (!this.patrolGoal || now - this.patrolSetAt >= BRAIN.DEFENDER_PATROL_RESET_INTERVAL) {
-          const stand = map.flagStands[ourTeam]
-          const angle = this.rand() * Math.PI * 2
-          const r = this.rand() * BRAIN.DEFENDER_PATROL_RADIUS
-          this.patrolGoal = { x: stand.x + Math.cos(angle) * r, y: stand.y, z: stand.z + Math.sin(angle) * r }
-          this.patrolSetAt = now
-          // Bypass GOAL_REFRESH_DIST for this specific re-roll (see
-          // forcePatrolGoalPush's comment) -- other goal updates still gate
-          // normally.
-          this.forcePatrolGoalPush = true
-        }
-        return this.patrolGoal
-      }
+      case 'defender':
+        return this.patrolAround(map.flagStands[ourTeam], p, now)
     }
+  }
+
+  /**
+   * A wandering point within DEFENDER_PATROL_RADIUS of `center`, re-rolled on
+   * arrival or after DEFENDER_PATROL_RESET_INTERVAL. Used by every role whose
+   * job is "guard this spot" -- returning the bare spot instead parks the bot
+   * dead still on top of it (Navigator stops on its goal), and several bots
+   * with the same job park inside each other, since players have no
+   * player-vs-player collision.
+   */
+  private patrolAround(center: Vec3, p: PlayerState, now: number): Vec3 {
+    const arrived =
+      this.patrolGoal !== null &&
+      Math.hypot(p.pos.x - this.patrolGoal.x, p.pos.z - this.patrolGoal.z) < BRAIN.PATROL_ARRIVE_DIST
+    if (!this.patrolGoal || arrived || now - this.patrolSetAt >= BRAIN.DEFENDER_PATROL_RESET_INTERVAL) {
+      const angle = this.rand() * Math.PI * 2
+      const r = this.rand() * BRAIN.DEFENDER_PATROL_RADIUS
+      this.patrolGoal = { x: center.x + Math.cos(angle) * r, y: center.y, z: center.z + Math.sin(angle) * r }
+      this.patrolSetAt = now
+      // Bypass GOAL_REFRESH_DIST for this specific re-roll (see
+      // forcePatrolGoalPush's comment) -- other goal updates still gate
+      // normally.
+      this.forcePatrolGoalPush = true
+    }
+    return this.patrolGoal
   }
 
   private desiredWeaponSlot(p: PlayerState, dist: number): 0 | 1 {
