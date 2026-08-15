@@ -150,12 +150,9 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   },
 }
 
-/** Sandbox's guaranteed precision starter: every loadout's weapon slot 0,
- * never rolled into slot 1 either (removed from WEAPON_POOL below). */
-export const STARTER_WEAPON: WeaponId = 'triad_rifle'
-
 export const WEAPON_POOL: WeaponId[] = [
   'pulse_smg',
+  'triad_rifle',
   'railspike',
   'boomtube',
   'scattergun',
@@ -165,6 +162,12 @@ export const WEAPON_POOL: WeaponId[] = [
   'arc_blade',
   'grav_maul',
 ]
+
+/** Slot 0 rolls from ranged weapons only: a fully unconstrained double roll
+ * could hand out two power melees, leaving the player with no gun at all
+ * (docs/DECISIONS.md -- the old guaranteed-starter rule existed for this).
+ * Slot 1 still rolls from the whole remaining pool. */
+const RANGED_POOL: WeaponId[] = WEAPON_POOL.filter((w) => WEAPONS[w].kind !== 'power_melee')
 
 const GRENADE_SPLITS: { frag: number; mag: number }[] = [
   { frag: 2, mag: 0 },
@@ -180,8 +183,12 @@ export function rollLoadout(rand: () => number): {
   grenades: { frag: number; mag: number }
   equipment: EquipmentId | null
 } {
-  const second = WEAPON_POOL[Math.floor(rand() * WEAPON_POOL.length)]
-  const weapons: [WeaponId, WeaponId] = [STARTER_WEAPON, second]
+  // Slot 0 from RANGED_POOL (always at least one gun), slot 1 from the
+  // remainder so a loadout never carries the same weapon twice.
+  const first = RANGED_POOL[Math.floor(rand() * RANGED_POOL.length)]
+  const rest = WEAPON_POOL.filter((w) => w !== first)
+  const second = rest[Math.floor(rand() * rest.length)]
+  const weapons: [WeaponId, WeaponId] = [first, second]
 
   const grenades = GRENADE_SPLITS[Math.floor(rand() * GRENADE_SPLITS.length)]
   const equipment = EQUIPMENT_OPTIONS[Math.floor(rand() * EQUIPMENT_OPTIONS.length)]

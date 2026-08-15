@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { HostedMatch } from '../src/match'
+import { BotBrain, DEFAULT_DIFFICULTY, DIFFICULTIES } from '../src/bots/brain'
+import { Navigator } from '../src/bots/nav'
 import type { PlayerInput, ServerMsg, SimEvent } from '@riftlane/shared'
-import { TICK_DT, CAPTURES_TO_WIN } from '@riftlane/shared'
+import { MatchSim, TICK_DT, CAPTURES_TO_WIN, WARMUP_SEC } from '@riftlane/shared'
 
 function makeInput(overrides?: Partial<PlayerInput>): PlayerInput {
   return {
@@ -260,5 +262,78 @@ describe('HostedMatch: carnage report medals', () => {
     expect(hunter.medals.killjoy).toBe(1)
     expect(hunter.medals.spree).toBeUndefined()
     expect(board.find((r) => r.id === 'h2')!.medals.spree).toBe(1)
+  })
+})
+
+describe('BotBrain: defender patrol re-roll bypasses the goal-refresh gate', () => {
+  it('pushes every periodic patrol re-roll to the Navigator, not just ones that clear GOAL_REFRESH_DIST', () => {
+    const sim = new MatchSim('gutter', 60)
+    const bot = sim.addPlayer('bot-1', 'Bot', 0, true)
+    bot.pos = { ...sim.map.flagStands[0] }
+
+    const brain = new BotBrain('bot-1', DEFAULT_DIFFICULTY, 600)
+    const setGoalSpy = vi.spyOn(Navigator.prototype, 'setGoal')
+
+    // DEFENDER_PATROL_RESET_INTERVAL is 4s -- resets land at t=0,4,8,12,16,20.
+    // Most re-rolled jitter points land within GOAL_REFRESH_DIST (3m) of the
+    // last one pushed, since the patrol radius itself is only 3m -- the gate
+    // at the setGoal callsite must not be allowed to swallow those, or the
+    // bot vibrates in place instead of patrolling (the exact bug this guards).
+    let now = 0
+    while (now < 21) {
+      brain.think(sim, sim.map, 'defender', now)
+      now += TICK_DT
+    }
+
+    expect(setGoalSpy.mock.calls.length).toBeGreaterThanOrEqual(6)
+    setGoalSpy.mockRestore()
+  })
+})
+
+describe('HostedMatch: warmup', () => {
+  it('snapshots carry phase "warmup" while sim.beginWarmup is in effect (the call launchMatch makes in lobby.ts)', () => {
+    vi.useFakeTimers()
+    const received: ServerMsg[] = []
+    const match = new HostedMatch('gutter', 9, (_id, msg) => received.push(msg), () => 4000)
+    match.addHuman('h1', 'Human1')
+    match.sim.beginWarmup(WARMUP_SEC)
+    match.start()
+
+    vi.advanceTimersByTime(100)
+    match.stop()
+
+    expect(match.sim.phase).toBe('warmup')
+    expect(match.sim.timeLeft).toBeLessThanOrEqual(WARMUP_SEC)
+    const snaps = received.filter(isSnapshot)
+    expect(snaps.length).toBeGreaterThan(0)
+    for (const s of snaps) expect(s.phase).toBe('warmup')
+  })
+})
+
+describe('HostedMatch: snapshot pickups field', () => {
+  it('includes pickups (index-aligned with map.powerPickups) for a map that has pads', () => {
+    vi.useFakeTimers()
+    const received: ServerMsg[] = []
+    // gutter has one powerPickups pad.
+    const match = new HostedMatch('gutter', 10, (_id, msg) => received.push(msg), () => 5000)
+    match.addHuman('h1', 'Human1')
+    match.start()
+
+    vi.advanceTimersByTime(100)
+    match.stop()
+
+    const snap = received.filter(isSnapshot).at(-1)
+    expect(snap).toBeDefined()
+    expect(snap!.pickups).toEqual([true])
+  })
+})
+
+describe('HostedMatch: botDifficulty threading', () => {
+  it('constructs bots with the hard difficulty preset when passed to the constructor', () => {
+    const match = new HostedMatch('gutter', 11, () => {}, undefined, DIFFICULTIES.hard)
+    const bot = match.addBot()
+    const brain = (match as unknown as { brains: Map<string, { difficulty: unknown }> }).brains.get(bot.id)
+    expect(brain).toBeDefined()
+    expect((brain as unknown as { difficulty: typeof DIFFICULTIES.hard }).difficulty).toEqual(DIFFICULTIES.hard)
   })
 })

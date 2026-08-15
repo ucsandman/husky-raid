@@ -1,4 +1,5 @@
 import type { PlayerInput } from '@riftlane/shared'
+import { GamepadReader } from './gamepad'
 
 const KEY_FORWARD = 'KeyW'
 const KEY_BACK = 'KeyS'
@@ -15,6 +16,13 @@ const KEY_SPRINT = 'ShiftLeft'
 const KEY_SLIDE = 'ControlLeft'
 
 const PITCH_LIMIT = Math.PI / 2 - 0.01
+
+/** Aim assist, pad only: while the reticle is already on a player, the right
+ * stick turns at this fraction of its normal rate. That is the whole of it
+ * -- no magnetism, no bullet bending. It makes tracking a strafing target
+ * possible on a thumbstick without ever aiming for the player, and it
+ * cannot help a mouse, which does not need it. */
+const PAD_AIM_ASSIST_SCALE = 0.55
 
 // Keys whose default browser action (page scroll, focus move, browser
 // shortcut) would fight the match now that onKeyDown no longer requires
@@ -34,6 +42,11 @@ const PREVENT_DEFAULT_KEYS = new Set([KEY_FORWARD, KEY_BACK, KEY_LEFT, KEY_RIGHT
  * `locked` swallowed every match's first trigger pull, and everything
  * typed before lock landed. Losing lock (Escape, alt-tab, window blur)
  * clears all held state instead, so nothing stays phantom-pressed.
+ *
+ * A gamepad is a third source layered on top of the same fields (see
+ * pollGamepad): its state is OR'd/added into the keyboard's, so nothing
+ * about mouse and keyboard changes when a pad is plugged in, and a player
+ * can use both at once.
  */
 export class InputManager {
   private readonly keys = new Set<string>()
@@ -46,9 +59,32 @@ export class InputManager {
   private swapPending = false
   private slidePending = false
 
+  // ---- gamepad ----------------------------------------------------------
+  private readonly gamepad = new GamepadReader()
+  /** Held pad state, refreshed by pollGamepad() and merged in sample(). */
+  private padForward = 0
+  private padStrafe = 0
+  private padFire = false
+  private padAds = false
+  private padJump = false
+  private padMelee = false
+  private padGrenade = false
+  private padEquipment = false
+  private padSprint = false
+  private padScoreboard = false
+  private padMenuPending = false
+  /** True once the pad has been touched, false again the moment the mouse
+   * actually moves. Drives whether a missing pointer lock counts as
+   * "paused" -- a pad player never clicks, so never holds lock. */
+  private padActive = false
+  /** Set by game.ts whenever baseFov changes; pad look slows by this while
+   * scoped, exactly as mouse look does. */
+  private adsSensitivityMult = 1
+
   constructor(
     private readonly canvas: HTMLElement,
-    private readonly getSensitivity: () => number
+    private readonly getSensitivity: () => number,
+    private readonly getPadSensitivity: () => number
   ) {
     this.canvas.addEventListener('click', this.onCanvasClick)
     document.addEventListener('pointerlockchange', this.onPointerLockChange)
@@ -78,6 +114,14 @@ export class InputManager {
   }
 
   private readonly onMouseMove = (e: MouseEvent): void => {
+    // A real mouse movement hands control back to mouse+keyboard. Checked
+    // BEFORE the lock gate: a pad player never holds pointer lock, so
+    // behind the gate this could never fire for them and the pause panel
+    // stayed suppressed forever. Zero-delta moves don't count: browsers
+    // emit those when the cursor is warped back to centre under pointer
+    // lock, and one of those must not knock a pad player out of pad mode
+    // mid-match.
+    if (e.movementX !== 0 || e.movementY !== 0) this.padActive = false
     if (!this.locked) return
     const s = this.getSensitivity()
     // Moving the mouse right (positive movementX) must turn the view right,
@@ -154,6 +198,91 @@ export class InputManager {
     this.mouseDown = false
     this.adsDown = false
     this.firePending = false
+    this.clearPadState()
+  }
+
+  /** Same idea as clearHeldState for the pad half: a backgrounded tab (or an
+   * unplugged controller) stops reporting, so whatever was held has no way
+   * to release itself. padActive is deliberately NOT cleared here -- an
+   * alt-tab shouldn't demote a pad player back to "click to resume". */
+  private clearPadState(): void {
+    this.padForward = 0
+    this.padStrafe = 0
+    this.padFire = false
+    this.padAds = false
+    this.padJump = false
+    this.padMelee = false
+    this.padGrenade = false
+    this.padEquipment = false
+    this.padSprint = false
+    this.padScoreboard = false
+  }
+
+  /**
+   * Reads the gamepad once per RENDER frame (not per sim tick): look is
+   * integrated continuously into the same yaw/pitch the mouse writes, so
+   * turning with the stick is as smooth as the display, and sample() stays
+   * a pure read of whatever the last poll left behind.
+   *
+   * `scoped` slows look by the same ADS multiplier mouse look gets;
+   * `onTarget` (the reticle is already over a player) applies aim assist.
+   * Both come from game.ts, which is where the ADS state and the cosmetic
+   * target raycast already live.
+   */
+  pollGamepad(dt: number, opts: { scoped: boolean; onTarget: boolean }): void {
+    const lookScale =
+      this.getPadSensitivity() *
+      (opts.scoped ? this.adsSensitivityMult : 1) *
+      (opts.onTarget ? PAD_AIM_ASSIST_SCALE : 1)
+    const frame = this.gamepad.poll(dt, lookScale)
+    if (!frame) {
+      this.clearPadState()
+      this.padActive = false
+      return
+    }
+    if (frame.active) this.padActive = true
+
+    this.yaw += frame.yawDelta
+    this.pitch += frame.pitchDelta
+    this.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, this.pitch))
+
+    this.padForward = frame.forward
+    this.padStrafe = frame.strafe
+    this.padFire = frame.fire
+    this.padAds = frame.ads
+    this.padJump = frame.jump
+    this.padMelee = frame.melee
+    this.padGrenade = frame.grenade
+    this.padEquipment = frame.equipment
+    this.padSprint = frame.sprint
+    this.padScoreboard = frame.scoreboard
+
+    // Pulses land in the same latches the mouse and keyboard use, so a
+    // trigger pull shorter than one sample() tick survives exactly as a
+    // short click does.
+    if (frame.firePressed) this.firePending = true
+    if (frame.slidePressed) this.slidePending = true
+    if (frame.swapPressed) this.swapPending = true
+    if (frame.menuPressed) this.padMenuPending = true
+  }
+
+  /** True while the player is driving with a pad. game.ts uses this to keep
+   * the "click to resume" overlay off screen for someone who never clicked. */
+  isPadActive(): boolean {
+    return this.padActive
+  }
+
+  /** One-shot: was Start pressed since the last call? */
+  consumePadMenuToggle(): boolean {
+    const pressed = this.padMenuPending
+    this.padMenuPending = false
+    return pressed
+  }
+
+  /** game.ts computes the ADS sensitivity multiplier from the live FOV
+   * setting; pad look needs the same number and has no other way to get it. */
+  setAdsSensitivityMult(mult: number): void {
+    this.adsSensitivityMult = mult
   }
 
   /** True for a keydown/contextmenu whose target is the match itself (the
@@ -177,14 +306,20 @@ export class InputManager {
     return { yaw: this.yaw, pitch: this.pitch }
   }
 
-  /** True while the scoreboard key is held (HUD reads this each frame). */
+  /** True while the scoreboard key (or the pad's View button) is held --
+   * the HUD reads this each frame. */
   scoreboardHeld(): boolean {
-    return this.keys.has(KEY_SCOREBOARD)
+    return this.keys.has(KEY_SCOREBOARD) || this.padScoreboard
   }
 
   sample(seq: number, dt: number): PlayerInput {
-    const forward = (this.keys.has(KEY_FORWARD) ? 1 : 0) - (this.keys.has(KEY_BACK) ? 1 : 0)
-    const strafe = (this.keys.has(KEY_RIGHT) ? 1 : 0) - (this.keys.has(KEY_LEFT) ? 1 : 0)
+    // Keyboard and pad are additive on both move axes, then clamped: the
+    // sim clamps them anyway (shared/src/physics.ts), and holding W while
+    // pushing the stick forward must be "forward", not "double speed".
+    const keyForward = (this.keys.has(KEY_FORWARD) ? 1 : 0) - (this.keys.has(KEY_BACK) ? 1 : 0)
+    const keyStrafe = (this.keys.has(KEY_RIGHT) ? 1 : 0) - (this.keys.has(KEY_LEFT) ? 1 : 0)
+    const forward = Math.max(-1, Math.min(1, keyForward + this.padForward))
+    const strafe = Math.max(-1, Math.min(1, keyStrafe + this.padStrafe))
     const swap = this.swapPending
     this.swapPending = false
     const slideRequest = this.slidePending
@@ -192,7 +327,7 @@ export class InputManager {
     // mouseDown alone can miss a click+release that both land inside one
     // ~33ms gap between samples; firePending latches the edge so that click
     // still reports fire=true on the next sample() no matter how short it was.
-    const fire = this.mouseDown || this.firePending
+    const fire = this.mouseDown || this.firePending || this.padFire
     this.firePending = false
     return {
       seq,
@@ -201,15 +336,15 @@ export class InputManager {
       pitch: this.pitch,
       forward,
       strafe,
-      jump: this.keys.has(KEY_JUMP),
+      jump: this.keys.has(KEY_JUMP) || this.padJump,
       fire,
-      melee: this.keys.has(KEY_MELEE),
-      grenade: this.keys.has(KEY_GRENADE),
-      equipment: this.keys.has(KEY_EQUIPMENT),
+      melee: this.keys.has(KEY_MELEE) || this.padMelee,
+      grenade: this.keys.has(KEY_GRENADE) || this.padGrenade,
+      equipment: this.keys.has(KEY_EQUIPMENT) || this.padEquipment,
       swap,
-      sprint: this.keys.has(KEY_SPRINT),
+      sprint: this.keys.has(KEY_SPRINT) || this.padSprint,
       slideRequest,
-      ads: this.adsDown,
+      ads: this.adsDown || this.padAds,
     }
   }
 

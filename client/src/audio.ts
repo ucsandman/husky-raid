@@ -14,13 +14,18 @@ export type SoundName =
   | 'shield_hit'
   | 'shield_break'
   | 'melee_swing'
+  | 'melee_hit'
   | 'blade_lunge'
   | 'death'
   | 'capture'
   | 'flag_taken'
   | 'teleport'
   | 'launchpad'
+  | 'pickup_taken'
+  | 'pickup_ready'
   | 'ui_click'
+  | 'countdown_tick'
+  | 'match_go'
   | 'hit_tick'
   | 'hit_kill'
   | 'headshot'
@@ -44,13 +49,18 @@ export const ALL_SOUND_NAMES: readonly SoundName[] = [
   'shield_hit',
   'shield_break',
   'melee_swing',
+  'melee_hit',
   'blade_lunge',
   'death',
   'capture',
   'flag_taken',
   'teleport',
   'launchpad',
+  'pickup_taken',
+  'pickup_ready',
   'ui_click',
+  'countdown_tick',
+  'match_go',
   'hit_tick',
   'hit_kill',
   'headshot',
@@ -65,6 +75,10 @@ export const ALL_SOUND_NAMES: readonly SoundName[] = [
   'spree',
   'lead_change',
 ]
+
+/** Background bed: 'menu' behind the main menu, 'match' during a live game,
+ * null for silence. See AudioEngine.setAmbient(). */
+export type AmbientMode = 'menu' | 'match' | null
 
 export interface PlayOpts {
   /** World-space source position. Omit for a non-positional (UI/global) sound. */
@@ -89,6 +103,20 @@ const FILE_SOUND_URLS: Record<FileSoundName, string> = {
 
 /** Beyond this distance a positional sound is inaudible and skipped entirely. */
 const MAX_DISTANCE = 40
+
+/** Seconds an ambient bed takes to fade in/out on a setAmbient() switch. */
+const AMBIENT_FADE = 1
+
+/** Everything one ambient bed owns, returned by the build*Ambient() methods
+ * below. `gain` is this bed's own level (crossfade target) feeding into
+ * master; `stopAt(when)` schedules every internal node's native .stop() at
+ * an AudioContext time and disconnects the whole bed once the last one
+ * actually ends -- no JS timer involved. */
+interface AmbientBed {
+  gain: GainNode
+  targetGain: number
+  stopAt: (when: number) => void
+}
 
 /**
  * Owns the WebAudio graph and every precomputed sound buffer for one match
@@ -122,6 +150,13 @@ class AudioEngine {
   private readonly urlFailed = new Set<string>()
   private readonly urlLoading = new Set<string>()
 
+  /** Currently active (or fading-in) ambient bed, if any -- see
+   * setAmbient(). Null whenever ambientMode is null or no bed has been
+   * built yet (before init()). */
+  private ambientMode: AmbientMode = null
+  private ambientGain: GainNode | null = null
+  private ambientStopAt: ((when: number) => void) | null = null
+
   /** Idempotent: safe to call from every click handler that might be the
    * first user gesture. Resumes an already-suspended context (e.g. after
    * dispose()) instead of rebuilding the 15 precomputed buffers. */
@@ -149,10 +184,171 @@ class AudioEngine {
     for (const url of Object.values(FILE_SOUND_URLS)) this.loadUrl(url)
   }
 
-  /** Wired to settings.volume (state.ts, persisted to localStorage). */
+  /** Wired to settings.volume (state.ts, persisted to localStorage). Live:
+   * ambient beds connect through master too, so this reaches them without
+   * any extra plumbing. */
   setVolume(v: number): void {
     this.volume = v
     if (this.master) this.master.gain.value = v
+  }
+
+  /**
+   * Switches the background ambient bed. No-op before init() has run (same
+   * "everything is a no-op until the user-gesture unlock" rule as
+   * play()/setVolume()) and a no-op if `mode` already matches the live bed.
+   * Otherwise the old bed (if any) ramps its own gain to 0 over
+   * AMBIENT_FADE seconds and has its nodes' native .stop() scheduled for
+   * exactly that moment, while the new bed (if any) ramps in from 0 over
+   * the same window -- a genuine overlap crossfade, not a fade-out-then-in.
+   * setAmbient(null) just runs the fade-out half.
+   */
+  setAmbient(mode: AmbientMode): void {
+    const ctx = this.ctx
+    const master = this.master
+    if (!ctx || !master) return
+    if (mode === this.ambientMode) return
+    this.ambientMode = mode
+
+    const now = ctx.currentTime
+
+    if (this.ambientGain && this.ambientStopAt) {
+      const oldGain = this.ambientGain
+      oldGain.gain.cancelScheduledValues(now)
+      oldGain.gain.setValueAtTime(oldGain.gain.value, now)
+      oldGain.gain.linearRampToValueAtTime(0, now + AMBIENT_FADE)
+      this.ambientStopAt(now + AMBIENT_FADE)
+      this.ambientGain = null
+      this.ambientStopAt = null
+    }
+
+    if (mode === null) return
+
+    const bed = mode === 'menu' ? this.buildMenuAmbient(ctx) : this.buildMatchAmbient(ctx)
+    bed.gain.gain.setValueAtTime(0, now)
+    bed.gain.gain.linearRampToValueAtTime(bed.targetGain, now + AMBIENT_FADE)
+    bed.gain.connect(master)
+    this.ambientGain = bed.gain
+    this.ambientStopAt = bed.stopAt
+  }
+
+  /** Menu bed: a very quiet slow-moving synth pad, four sine-oscillator
+   * triads (Am-F-C-G) crossfading into each other every `chordDur` seconds
+   * through a lowpass, so the menu never sits on a static drone. Chord
+   * timing is pre-scheduled AudioParam ramps (native WebAudio automation),
+   * not a JS interval, for a generous ~53 minutes before it would need
+   * re-arming -- far past any real menu session. */
+  private buildMenuAmbient(ctx: AudioContext): AmbientBed {
+    const gain = ctx.createGain()
+    const filter = ctx.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.frequency.value = 700
+    filter.connect(gain)
+
+    const CHORDS: readonly (readonly number[])[] = [
+      [220, 261.63, 329.63], // Am (A3 C4 E4)
+      [174.61, 220, 261.63], // F
+      [130.81, 164.81, 196], // C
+      [196, 246.94, 293.66], // G
+    ]
+    const chordDur = 4
+    const cycle = chordDur * CHORDS.length
+    const reps = 200 // ~200 * 16s = ~53 minutes
+    const start = ctx.currentTime
+    const oscillators: OscillatorNode[] = []
+
+    CHORDS.forEach((chord, ci) => {
+      for (const freq of chord) {
+        const osc = ctx.createOscillator()
+        osc.type = 'sine'
+        osc.frequency.value = freq
+        const og = ctx.createGain()
+        og.gain.value = 0
+        osc.connect(og)
+        og.connect(filter)
+        for (let rep = 0; rep < reps; rep++) {
+          const t0 = start + rep * cycle + ci * chordDur
+          og.gain.linearRampToValueAtTime(0, t0)
+          og.gain.linearRampToValueAtTime(0.22, t0 + 1.2)
+          og.gain.linearRampToValueAtTime(0.22, t0 + chordDur - 1.2)
+          og.gain.linearRampToValueAtTime(0, t0 + chordDur)
+        }
+        osc.start()
+        oscillators.push(osc)
+      }
+    })
+
+    const stopAt = (when: number) => {
+      for (const osc of oscillators) osc.stop(when)
+      oscillators[0].onended = () => {
+        for (const osc of oscillators) osc.disconnect()
+        filter.disconnect()
+        gain.disconnect()
+      }
+    }
+
+    return { gain, targetGain: 0.06, stopAt }
+  }
+
+  /** Match bed: filtered brown noise "wind" (a looped buffer -- an actual
+   * looped node, not a JS interval) plus a sparse low sine pulse every
+   * `pulsePeriod` seconds, pre-scheduled the same bounded way as the menu
+   * chords. Near-subliminal: both parts sit well under the SFX layer. */
+  private buildMatchAmbient(ctx: AudioContext): AmbientBed {
+    const gain = ctx.createGain()
+
+    const windSeconds = 8
+    const windBuffer = makeBuffer(ctx, windSeconds, (data, sr) => {
+      let last = 0
+      for (let i = 0; i < data.length; i++) {
+        last = (last + (Math.random() * 2 - 1) * 0.02) / 1.02
+        data[i] = last
+      }
+      let peak = 0
+      for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]))
+      if (peak > 0) for (let i = 0; i < data.length; i++) data[i] /= peak
+      applyLowpass(data, sr, () => 450)
+    })
+    const windSrc = ctx.createBufferSource()
+    windSrc.buffer = windBuffer
+    windSrc.loop = true
+    const windGain = ctx.createGain()
+    windGain.gain.value = 0.5
+    windSrc.connect(windGain)
+    windGain.connect(gain)
+    windSrc.start()
+
+    const pulseOsc = ctx.createOscillator()
+    pulseOsc.type = 'sine'
+    pulseOsc.frequency.value = 55
+    const pulseGain = ctx.createGain()
+    pulseGain.gain.value = 0
+    pulseOsc.connect(pulseGain)
+    pulseGain.connect(gain)
+    pulseOsc.start()
+
+    const pulsePeriod = 9
+    const reps = 220 // ~220 * 9s = ~33 minutes
+    const start = ctx.currentTime
+    for (let i = 0; i < reps; i++) {
+      const t0 = start + i * pulsePeriod
+      pulseGain.gain.linearRampToValueAtTime(0, t0)
+      pulseGain.gain.linearRampToValueAtTime(0.45, t0 + 1.5)
+      pulseGain.gain.linearRampToValueAtTime(0, t0 + 3.5)
+    }
+
+    const stopAt = (when: number) => {
+      windSrc.stop(when)
+      pulseOsc.stop(when)
+      windSrc.onended = () => {
+        windSrc.disconnect()
+        windGain.disconnect()
+        pulseOsc.disconnect()
+        pulseGain.disconnect()
+        gain.disconnect()
+      }
+    }
+
+    return { gain, targetGain: 0.05, stopAt }
   }
 
   play(name: SoundName, opts?: PlayOpts): void {
@@ -432,6 +628,24 @@ function synth(ctx: AudioContext, name: SoundName): AudioBuffer {
         }
       })
 
+    // Melee impact: low sine "knock" (120Hz->70Hz) plus a lowpassed noise
+    // thud on top -- the landed half of melee_swing's whoosh, duller and
+    // punchier than land/damage_taken so a connected swing reads distinctly.
+    case 'melee_hit':
+      return makeBuffer(ctx, 0.09, (data, sr) => {
+        const n = noise(data.length)
+        applyLowpass(n, sr, () => 700)
+        let phase = 0
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          const freq = 120 - 50 * Math.min(1, t / 0.05)
+          phase += freq / sr
+          const knock = Math.sin(2 * Math.PI * phase) * Math.exp(-t * 26)
+          const thud = n[i] * Math.exp(-t * 40) * 0.5
+          data[i] = (knock * 0.8 + thud) * Math.min(1, t / 0.003)
+        }
+      })
+
     // Rising sawtooth chirp 200Hz->900Hz over 180ms.
     case 'blade_lunge':
       return makeBuffer(ctx, 0.18, (data, sr) => {
@@ -488,12 +702,76 @@ function synth(ctx: AudioContext, name: SoundName): AudioBuffer {
         }
       })
 
+    // Power pickup taken: two-note rising bell (E5->A5), each note a
+    // two-partial chime -- richer than flag_returned's plain sine arpeggio
+    // so a weapon pickup doesn't get mistaken for a flag event.
+    case 'pickup_taken':
+      return makeBuffer(ctx, 0.24, (data, sr) => {
+        const notes: [number, number][] = [
+          [0, 659.25],
+          [0.1, 880],
+        ]
+        for (const [start, freq] of notes) {
+          const startI = Math.round(start * sr)
+          for (let i = 0; i < data.length - startI; i++) {
+            const t = i / sr
+            const env = Math.exp(-t * 12) * Math.min(1, t / 0.004)
+            data[startI + i] +=
+              (Math.sin(2 * Math.PI * freq * t) * 0.6 + Math.sin(2 * Math.PI * freq * 2 * t) * 0.25) * env
+          }
+        }
+      })
+
+    // Pickup pad ready: a soft, heavily lowpassed square-wave blip -- reads
+    // as a distant klaxon rather than an alert, so it doesn't compete with
+    // combat cues while signalling a power weapon just respawned.
+    case 'pickup_ready':
+      return makeBuffer(ctx, 0.16, (data, sr) => {
+        const raw = new Float32Array(data.length)
+        for (let i = 0; i < raw.length; i++) {
+          const t = i / sr
+          const freq = 340 + Math.sin(2 * Math.PI * 8 * t) * 20
+          raw[i] = ((freq * t) % 1) < 0.5 ? 1 : -1
+        }
+        applyLowpass(raw, sr, () => 900)
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          data[i] = raw[i] * Math.exp(-t * 16) * Math.min(1, t / 0.02) * 0.35
+        }
+      })
+
     // Tiny lowpassed noise tick, ~15ms.
     case 'ui_click':
       return makeBuffer(ctx, 0.02, (data, sr) => {
         const n = noise(data.length)
         applyLowpass(n, sr, () => 6000)
         for (let i = 0; i < data.length; i++) data[i] = n[i] * Math.exp(-(i / sr) * 260) * 0.5
+      })
+
+    // Countdown tick: a dry, low-cutoff noise tick -- pitched darker and
+    // shorter than ui_click so the warmup countdown doesn't sound like menu
+    // navigation.
+    case 'countdown_tick':
+      return makeBuffer(ctx, 0.018, (data, sr) => {
+        const n = noise(data.length)
+        applyLowpass(n, sr, () => 2200)
+        for (let i = 0; i < data.length; i++) data[i] = n[i] * Math.exp(-(i / sr) * 320) * 0.45
+      })
+
+    // Match go: a bright open bell stacked over a low boom -- the "fight!"
+    // moment needs to read as unmistakably GO even under a wall of gunfire.
+    case 'match_go':
+      return makeBuffer(ctx, 0.4, (data, sr) => {
+        let boomPhase = 0
+        for (let i = 0; i < data.length; i++) {
+          const t = i / sr
+          const bellEnv = Math.exp(-t * 6) * Math.min(1, t / 0.004)
+          const bell = (Math.sin(2 * Math.PI * 1568 * t) * 0.5 + Math.sin(2 * Math.PI * 2093 * t) * 0.35) * bellEnv
+          const boomFreq = 85 - 35 * Math.min(1, t / 0.2)
+          boomPhase += boomFreq / sr
+          const boom = Math.sin(2 * Math.PI * boomPhase) * Math.exp(-t * 7) * Math.min(1, t / 0.01) * 0.7
+          data[i] = bell + boom
+        }
       })
 
     // Hit marker: two-partial high sine tick (2400Hz + 3200Hz), ~40ms decay --

@@ -61,6 +61,17 @@ export const gutter: GameMap = {
     { min: { x: 6, y: 0, z: -31 }, max: { x: 7, y: 6, z: 31 } }, // 14 east perimeter wall
     { min: { x: -7, y: 0, z: -31 }, max: { x: 7, y: 6, z: -30 } }, // 15 south perimeter wall (behind cobalt base)
     { min: { x: -7, y: 0, z: 30 }, max: { x: 7, y: 6, z: 31 } }, // 16 north perimeter wall (behind ember base)
+    // Rail cover pair, added so the two rails are worth walking instead of
+    // being bare run-up strips. Same 180-degree-rotational pairing as boxes
+    // 7-12 (x -> -x, z -> -z): box 17 at (-5, -20.5), box 18 at (5, 20.5).
+    // Both sit ON the rails (x -6..-4 / 4..6) and stop 0.7m short of the
+    // base platforms at z = +-22, so neither overlaps a platform box.
+    // Clearance checked against EVERY walk edge in the graph below: 0-1,
+    // 1-2, 2-3, 3-4, 4-5, 5-6, 6-7 and 7-8 all run along x = 0 (4.2m of
+    // clearance); 1-9 (z = -18) and 10-7 (z = 18) are the tightest at 1.7m;
+    // 4-11, 12-2, 4-13 and 14-6 all sit inside x -1..1 near mid, 3.2m+ away.
+    { min: { x: -5.8, y: 0, z: -21.3 }, max: { x: -4.2, y: 1, z: -19.7 } }, // 17
+    { min: { x: 4.2, y: 0, z: 19.7 }, max: { x: 5.8, y: 1, z: 21.3 } }, // 18
   ],
   boxColors: [
     0x2244aa, // cobalt base
@@ -80,6 +91,8 @@ export const gutter: GameMap = {
     0x777777,
     0x777777,
     0x777777,
+    0x3355bb, // rail cover (cobalt side)
+    0xbb6633, // rail cover (ember side)
   ],
   // Velocities scaled by k = sqrt(PLAYER_GRAVITY / GRAVITY) = sqrt(24/20)
   // ~= 1.0954 from their original (0,9,-10)/(0,9,10) so the launched
@@ -91,6 +104,15 @@ export const gutter: GameMap = {
     { pos: { x: 1, y: 0, z: 0 }, radius: 1, velocity: { x: 0, y: 9.859, z: 10.954 } },
   ],
   teleporters: [{ a: { x: -5, y: 0, z: -18 }, b: { x: -5, y: 0, z: 18 }, radius: 1 }],
+  // One boomtube pad on the east rail at mid, NOT at the origin. PICKUP_RADIUS
+  // is 1.4 and both launch pads sit at x = +-1, z = 0 with a 1m trigger
+  // radius, so a pad at the origin would be inside the launch pads' own
+  // approach: node 4 of the waypoint graph IS (0,0,0), meaning every bot
+  // heading for a pad -- and every player stepping on one -- would collect
+  // the power weapon for free on the way. z = 0 keeps it exactly 26m from
+  // both flag stands (dead even for both teams); the east rail balances the
+  // teleporter alcoves, which are both on the west rail.
+  powerPickups: [{ pos: { x: 5, y: 0, z: 0 }, weapon: 'boomtube', respawnSec: 45 }],
   spawns: [
     [
       { x: -3, y: 0.5, z: -27 },

@@ -1,9 +1,67 @@
 import type { BoardRow, ClientMsg, MedalId, Team } from '@riftlane/shared'
-import { store, saveSettings, DEFAULT_SENSITIVITY, type ClientState, type RosterPlayer } from '../state'
+import {
+  store,
+  saveSettings,
+  DEFAULT_SENSITIVITY,
+  DEFAULT_FOV,
+  DEFAULT_PAD_SENSITIVITY,
+  type ClientState,
+  type RosterPlayer,
+} from '../state'
 import { audioEngine } from '../audio'
 
 const TEAM_COLOR: Record<Team, string> = { 0: 'var(--cobalt)', 1: 'var(--ember)' }
 const TEAM_NAME: Record<Team, string> = { 0: 'Cobalt', 1: 'Ember' }
+
+type BotDifficulty = 'easy' | 'normal' | 'hard'
+const BOT_DIFFICULTIES: BotDifficulty[] = ['easy', 'normal', 'hard']
+const BOT_DIFFICULTY_LABEL: Record<BotDifficulty, string> = { easy: 'Easy', normal: 'Normal', hard: 'Hard' }
+const BOT_DIFFICULTY_KEY = 'riftlane:botDifficulty'
+
+/** Plain module-level UI state, not routed through the store -- it isn't
+ * server- or match-relevant, and every render() rebuilds the segmented
+ * control from scratch anyway, so a store round-trip would only cost an
+ * extra full re-render per click for nothing. Persisted separately from
+ * ../state.ts's Settings blob (own localStorage key, "alongside" it per the
+ * task) since it isn't a display/input setting. */
+let botDifficulty: BotDifficulty = loadBotDifficulty()
+
+function loadBotDifficulty(): BotDifficulty {
+  try {
+    const raw = localStorage.getItem(BOT_DIFFICULTY_KEY)
+    if (raw === 'easy' || raw === 'normal' || raw === 'hard') return raw
+  } catch {
+    // corrupt/unavailable localStorage -- fall through to default
+  }
+  return 'normal'
+}
+
+function saveBotDifficulty(d: BotDifficulty): void {
+  try {
+    localStorage.setItem(BOT_DIFFICULTY_KEY, d)
+  } catch {
+    // storage unavailable (private mode, quota) -- non-fatal
+  }
+}
+
+/** Three-way Easy/Normal/Hard picker. Selecting a segment updates the
+ * module-level `botDifficulty` directly and toggles the active class on the
+ * buttons in place -- no store.set(), so no full-screen re-render fires for
+ * what is a same-screen, same-frame click. */
+function renderBotDifficultyControl(): HTMLElement {
+  const wrap = el('div', 'segmented')
+  for (const d of BOT_DIFFICULTIES) {
+    const btn = el('button', `segmented-btn${d === botDifficulty ? ' segmented-btn--active' : ''}`, BOT_DIFFICULTY_LABEL[d])
+    btn.type = 'button'
+    btn.addEventListener('click', () => {
+      botDifficulty = d
+      saveBotDifficulty(d)
+      for (const other of Array.from(wrap.children)) other.classList.toggle('segmented-btn--active', other === btn)
+    })
+    wrap.appendChild(btn)
+  }
+  return wrap
+}
 
 // Real bindings from input.ts -- sprint/slide listed right after move so
 // they're readable at a glance (undiscoverable otherwise: both are
@@ -18,6 +76,26 @@ const CONTROLS: [string, string][] = [
   ['G', 'Grenade'],
   ['E', 'Equipment'],
   ['1 / 2 / Scroll', 'Swap weapon'],
+]
+
+// Xbox controller bindings -- input.ts's gamepad mapping. Kept as a second
+// list rather than merged into CONTROLS above: several of these (scoreboard,
+// pause) have no dedicated keyboard row today, and forcing a shared table
+// would imply a 1:1 key<->button mapping that doesn't exist.
+const GAMEPAD_CONTROLS: [string, string][] = [
+  ['LS', 'Move'],
+  ['RS', 'Aim'],
+  ['RT', 'Fire'],
+  ['LT', 'Aim down sights'],
+  ['A', 'Jump'],
+  ['B', 'Slide'],
+  ['X', 'Equipment'],
+  ['Y', 'Swap weapon'],
+  ['RB', 'Grenade'],
+  ['LB', 'Melee'],
+  ['LS click', 'Sprint'],
+  ['View', 'Scoreboard'],
+  ['Menu', 'Pause'],
 ]
 
 type Send = (msg: ClientMsg) => void
@@ -149,8 +227,13 @@ function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
 
   const quickPlayBtn = el('button', 'btn btn--primary btn--hero', 'Quick Play')
   quickPlayBtn.disabled = offline
-  quickPlayBtn.addEventListener('click', () => send({ t: 'quick_play' }))
+  quickPlayBtn.addEventListener('click', () => send({ t: 'quick_play', botDifficulty }))
   actions.appendChild(quickPlayBtn)
+
+  const botDifficultyRow = el('div', 'field')
+  botDifficultyRow.appendChild(el('label', 'field-label', 'Bot difficulty'))
+  botDifficultyRow.appendChild(renderBotDifficultyControl())
+  actions.appendChild(botDifficultyRow)
 
   const createBtn = el('button', 'btn', 'Create Room')
   createBtn.disabled = offline
@@ -220,6 +303,15 @@ function renderControlsPanel(): HTMLElement {
     grid.appendChild(el('span', 'control-action', action))
   }
   panel.appendChild(grid)
+
+  panel.appendChild(el('h2', 'panel-heading', 'GAMEPAD'))
+  const padGrid = el('div', 'controls-grid')
+  for (const [key, action] of GAMEPAD_CONTROLS) {
+    padGrid.appendChild(el('span', 'control-key', key))
+    padGrid.appendChild(el('span', 'control-action', action))
+  }
+  panel.appendChild(padGrid)
+
   return panel
 }
 
@@ -273,6 +365,52 @@ function renderSettingsPanel(state: ClientState): HTMLElement {
   volRow.append(volInput, volValue)
   panel.appendChild(volRow)
 
+  const fovRow = el('div', 'field field--slider')
+  const fovValue = el('span', 'field-value', `${Math.round(state.settings.fov || DEFAULT_FOV)}°`)
+  const fovLabel = el('label', 'field-label', 'Field of view')
+  fovLabel.htmlFor = 'fov-input'
+  fovRow.appendChild(fovLabel)
+  const fovInput = el('input', 'range-input')
+  fovInput.id = 'fov-input'
+  fovInput.type = 'range'
+  fovInput.min = '75'
+  fovInput.max = '100'
+  fovInput.step = '1'
+  fovInput.value = String(state.settings.fov || DEFAULT_FOV)
+  fovInput.addEventListener('input', () => {
+    fovValue.textContent = `${Math.round(Number(fovInput.value))}°`
+  })
+  fovInput.addEventListener('change', () => {
+    const settings = { ...state.settings, fov: Number(fovInput.value) }
+    saveSettings(settings)
+    store.set({ settings })
+  })
+  fovRow.append(fovInput, fovValue)
+  panel.appendChild(fovRow)
+
+  const padSensRow = el('div', 'field field--slider')
+  const padSensValue = el('span', 'field-value', (state.settings.padSensitivity || DEFAULT_PAD_SENSITIVITY).toFixed(1))
+  const padSensLabel = el('label', 'field-label', 'Controller sensitivity')
+  padSensLabel.htmlFor = 'pad-sensitivity-input'
+  padSensRow.appendChild(padSensLabel)
+  const padSensInput = el('input', 'range-input')
+  padSensInput.id = 'pad-sensitivity-input'
+  padSensInput.type = 'range'
+  padSensInput.min = '0.1'
+  padSensInput.max = '3'
+  padSensInput.step = '0.1'
+  padSensInput.value = String(state.settings.padSensitivity || DEFAULT_PAD_SENSITIVITY)
+  padSensInput.addEventListener('input', () => {
+    padSensValue.textContent = Number(padSensInput.value).toFixed(1)
+  })
+  padSensInput.addEventListener('change', () => {
+    const settings = { ...state.settings, padSensitivity: Number(padSensInput.value) }
+    saveSettings(settings)
+    store.set({ settings })
+  })
+  padSensRow.append(padSensInput, padSensValue)
+  panel.appendChild(padSensRow)
+
   return panel
 }
 
@@ -314,8 +452,13 @@ function renderLobbyScreen(state: ClientState, send: Send): HTMLElement {
   const isHost = state.hostId !== null && state.hostId === state.playerId
   const actions = el('div', 'actions')
   if (isHost) {
+    const botDifficultyRow = el('div', 'field')
+    botDifficultyRow.appendChild(el('label', 'field-label', 'Bot difficulty'))
+    botDifficultyRow.appendChild(renderBotDifficultyControl())
+    actions.appendChild(botDifficultyRow)
+
     const startBtn = el('button', 'btn btn--primary', 'Start Match')
-    startBtn.addEventListener('click', () => send({ t: 'start_match' }))
+    startBtn.addEventListener('click', () => send({ t: 'start_match', botDifficulty }))
     actions.appendChild(startBtn)
   } else {
     actions.appendChild(el('p', 'hint', 'Waiting for host to start…'))

@@ -83,7 +83,11 @@ export function createScene(canvas: HTMLCanvasElement): SceneCtx {
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = EXPOSURE
   renderer.shadowMap.enabled = true
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  // PCF, not PCFSoft: the soft variant costs a much wider shadow-map filter
+  // kernel per lit fragment, and 60fps is a shipping requirement here. The
+  // visible difference at this map's scale is slightly crisper shadow
+  // edges, which is an acceptable trade for the frame time.
+  renderer.shadowMap.type = THREE.PCFShadowMap
 
   const scene = new THREE.Scene()
   scene.fog = new THREE.Fog(FOG_COLOR, FOG_NEAR, FOG_FAR)

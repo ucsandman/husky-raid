@@ -7,13 +7,18 @@ import {
   INTERP_DELAY,
   MAX_HEALTH,
   MAX_SHIELD,
-  add,
-  scale,
+  lerp,
 } from '@riftlane/shared'
 
 // Camera eases a reconcile correction out over this long instead of
 // snapping straight to the server's authoritative position.
 const CORRECTION_SMOOTH_TIME = 0.1
+/** A correction bigger than this is a real misprediction (a respawn
+ * teleport, a launchpad the client never saw, a dropped input burst), not
+ * the sub-metre drift CORRECTION_SMOOTH_TIME exists to hide. Easing one out
+ * over 100ms drags the camera through the world at tens of m/s and reads as
+ * a lurch; snapping is the honest, less nauseating answer. */
+const CORRECTION_SNAP_DIST = 2.5
 
 /**
  * Turns variable-length render-frame dt into a stream of fixed TICK_DT
@@ -38,6 +43,15 @@ export class InputAccumulator {
       this.seq++
     }
     return out
+  }
+
+  /** How far into the NEXT tick the accumulator already is, 0..1. The
+   * render frame that consumed the last whole tick is almost never sitting
+   * exactly on a tick boundary; this leftover is what lets the caller draw
+   * the in-between position instead of holding the last tick's pose until
+   * the next one lands (see ClientPrediction.localPose). */
+  alpha(): number {
+    return this.acc / TICK_DT
   }
 }
 
@@ -102,7 +116,15 @@ export class ClientPrediction {
   private accumulator = new InputAccumulator()
   private localState: PlayerState | null = null
   private localId: string | null = null
-  private correctionOffset: Vec3 = { x: 0, y: 0, z: 0 }
+  /** Position the local player held BEFORE the most recently applied tick.
+   * Mutated in place, never reassigned -- localPose() runs every render
+   * frame and must not allocate. */
+  private readonly prevPos: Vec3 = { x: 0, y: 0, z: 0 }
+  private readonly correctionOffset: Vec3 = { x: 0, y: 0, z: 0 }
+  /** Single reused return value for localPose(). Callers read it and are
+   * done with it inside the same frame (game.ts does); nothing may hold on
+   * to it across frames. */
+  private readonly poseScratch = { pos: { x: 0, y: 0, z: 0 } as Vec3, yaw: 0, pitch: 0 }
   // Local estimate of the server's sim clock (same units as
   // snapshot.time): anchored to the latest snapshot on arrival, then
   // free-runs forward with each frame's dt in between.
@@ -121,7 +143,8 @@ export class ClientPrediction {
     this.accumulator = new InputAccumulator()
     this.localState = null
     this.localId = localId
-    this.correctionOffset = { x: 0, y: 0, z: 0 }
+    this.prevPos.x = this.prevPos.y = this.prevPos.z = 0
+    this.correctionOffset.x = this.correctionOffset.y = this.correctionOffset.z = 0
     this.serverClock = 0
     this.haveClock = false
   }
@@ -136,7 +159,16 @@ export class ClientPrediction {
   stepAndCollectInputs(dt: number, sampleInput: () => Omit<PlayerInput, 'seq' | 'dt'>): PlayerInput[] {
     const inputs = this.accumulator.step(dt, sampleInput)
     if (this.predictor && this.localState) {
-      for (const input of inputs) this.predictor.applyInput(this.localState, input)
+      for (const input of inputs) {
+        // Remember where this tick started before stepping it, so the
+        // render frames that fall between this tick and the next one can be
+        // drawn along the segment instead of parked on its end point.
+        const pos = this.localState.pos
+        this.prevPos.x = pos.x
+        this.prevPos.y = pos.y
+        this.prevPos.z = pos.z
+        this.predictor.applyInput(this.localState, input)
+      }
     }
     return inputs
   }
@@ -146,8 +178,10 @@ export class ClientPrediction {
    * reconcile correction offset toward zero. */
   tick(dt: number): void {
     if (this.haveClock) this.serverClock += dt
-    const decay = Math.min(1, dt / CORRECTION_SMOOTH_TIME)
-    this.correctionOffset = scale(this.correctionOffset, 1 - decay)
+    const keep = 1 - Math.min(1, dt / CORRECTION_SMOOTH_TIME)
+    this.correctionOffset.x *= keep
+    this.correctionOffset.y *= keep
+    this.correctionOffset.z *= keep
   }
 
   onSnapshot(snap: PredictSnapshot): void {
@@ -161,24 +195,59 @@ export class ClientPrediction {
 
     if (!this.localState) {
       this.localState = reconstructPlayerState(serverLocal)
+      this.prevPos.x = this.localState.pos.x
+      this.prevPos.y = this.localState.pos.y
+      this.prevPos.z = this.localState.pos.z
       return
     }
 
     const delta = this.predictor.reconcile(this.localState, serverLocal, snap.ackSeq)
+    // reconcile() moved pos by -delta; move the interpolation's start point
+    // by the same amount so the prev->curr segment still describes one
+    // tick of travel rather than a jump from a pre-correction position.
+    this.prevPos.x -= delta.x
+    this.prevPos.y -= delta.y
+    this.prevPos.z -= delta.z
+
+    if (Math.hypot(delta.x, delta.y, delta.z) > CORRECTION_SNAP_DIST) {
+      // Too big to ease out (see CORRECTION_SNAP_DIST) -- drop the offset
+      // entirely, which puts the camera on the server's answer this frame.
+      this.correctionOffset.x = this.correctionOffset.y = this.correctionOffset.z = 0
+      return
+    }
     // Fold the new correction in on top of whatever hadn't finished
     // decaying yet, so back-to-back corrections don't visually pop.
-    this.correctionOffset = add(this.correctionOffset, delta)
+    this.correctionOffset.x += delta.x
+    this.correctionOffset.y += delta.y
+    this.correctionOffset.z += delta.z
   }
 
-  /** Predicted local camera pose (position smoothed by the decaying
-   * reconcile offset), or null before the first snapshot arrives. */
+  /**
+   * Predicted local camera pose, or null before the first snapshot arrives.
+   *
+   * Position is interpolated across the fixed TICK_DT prediction step: the
+   * sim only moves the player 30 times a second, but the display runs at 60+
+   * and would otherwise show the same position for two or three frames in a
+   * row -- a visible per-frame stutter that no amount of smooth mouselook
+   * hides. Rendering `alpha` of the way from the previous tick to the
+   * current one costs one fixed tick (33ms) of position latency, which is
+   * the standard fixed-timestep trade and far less noticeable than the
+   * stepping it removes.
+   *
+   * Returns a REUSED object (see poseScratch) -- read it this frame, don't
+   * store it.
+   */
   localPose(): { pos: Vec3; yaw: number; pitch: number } | null {
     if (!this.localState) return null
-    return {
-      pos: add(this.localState.pos, this.correctionOffset),
-      yaw: this.localState.yaw,
-      pitch: this.localState.pitch,
-    }
+    const t = Math.min(1, this.accumulator.alpha())
+    const cur = this.localState.pos
+    const out = this.poseScratch
+    out.pos.x = lerp(this.prevPos.x, cur.x, t) + this.correctionOffset.x
+    out.pos.y = lerp(this.prevPos.y, cur.y, t) + this.correctionOffset.y
+    out.pos.z = lerp(this.prevPos.z, cur.z, t) + this.correctionOffset.z
+    out.yaw = this.localState.yaw
+    out.pitch = this.localState.pitch
+    return out
   }
 
   /** Whether the local player is currently aiming down sights, straight off

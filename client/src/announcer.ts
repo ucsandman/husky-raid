@@ -43,6 +43,7 @@ export type BarkId =
   | 'lead_lost'
   | 'victory'
   | 'defeat'
+  | 'power_weapon_ready'
 
 interface Bark {
   text: string
@@ -53,6 +54,8 @@ interface Bark {
 }
 
 const BARKS: Record<BarkId, Bark> = {
+  // Also the line for the sim's 'match_go' event (warmup countdown hits
+  // zero) -- same "Fight!" call, one bark id, no duplicate needed.
   match_start: { text: 'Fight!', priority: 5, src: '/assets/audio/voice/match_start.mp3' },
 
   // Multikill ladder -- kills inside MULTIKILL_WINDOW of each other.
@@ -95,6 +98,11 @@ const BARKS: Record<BarkId, Bark> = {
   they_scored: { text: 'Enemy scores', priority: 7, src: '/assets/audio/voice/they_scored.mp3' },
   lead_taken: { text: 'You have taken the lead', priority: 5, src: '/assets/audio/voice/lead_taken.mp3' },
   lead_lost: { text: 'You have lost the lead', priority: 5, src: '/assets/audio/voice/lead_lost.mp3' },
+
+  // Power weapon pickup pad respawned -- an environmental cue, not a
+  // personal reward, so its priority sits with the flag-state barks rather
+  // than the kill ladder.
+  power_weapon_ready: { text: 'Power weapon up', priority: 4, src: '/assets/audio/voice/power_weapon_ready.mp3' },
 
   victory: { text: 'Victory', priority: 10, src: '/assets/audio/voice/victory.mp3' },
   defeat: { text: 'Defeat', priority: 10, src: '/assets/audio/voice/defeat.mp3' },

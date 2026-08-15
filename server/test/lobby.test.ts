@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Lobby } from '../src/lobby'
+import { DIFFICULTIES, DEFAULT_DIFFICULTY } from '../src/bots/brain'
 import type { ServerMsg } from '@riftlane/shared'
 
 function fakeRand(): () => number {
@@ -229,6 +230,48 @@ describe('Lobby: rematch votes from departed players expire', () => {
     // Both remaining members (2 of 2) is a real majority.
     lobby.handle(d.id, { t: 'rematch_vote' })
     expect(c.received.filter(isMatchStart).length).toBe(cStartsBefore + 1)
+
+    lobby.stop()
+  })
+})
+
+describe('Lobby: botDifficulty threading (fix 3)', () => {
+  function brainsOf(room: ReturnType<Lobby['getRoom']>) {
+    return (room!.match as unknown as { brains: Map<string, { difficulty: unknown }> }).brains
+  }
+
+  it('constructs every bot with the hard preset when start_match carries botDifficulty: "hard"', () => {
+    const lobby = new Lobby(fakeRand())
+    const a = makePlayer('a')
+    lobby.connect(a.id, 'Alice', a.send)
+
+    lobby.handle(a.id, { t: 'create_room' })
+    const code = a.received.find(isRoom)!.code
+    lobby.handle(a.id, { t: 'start_match', botDifficulty: 'hard' })
+
+    const room = lobby.getRoom(code)!
+    const bots = [...room.match!.sim.players.values()].filter((p) => p.bot)
+    expect(bots.length).toBeGreaterThan(0)
+    const brains = brainsOf(room)
+    for (const bot of bots) expect(brains.get(bot.id)?.difficulty).toEqual(DIFFICULTIES.hard)
+
+    lobby.stop()
+  })
+
+  it('falls back to the default difficulty for a botDifficulty value outside the allowlist (untrusted client JSON)', () => {
+    const lobby = new Lobby(fakeRand())
+    const a = makePlayer('a')
+    lobby.connect(a.id, 'Alice', a.send)
+
+    lobby.handle(a.id, { t: 'create_room' })
+    const code = a.received.find(isRoom)!.code
+    lobby.handle(a.id, { t: 'start_match', botDifficulty: 'nightmare' as unknown as 'hard' })
+
+    const room = lobby.getRoom(code)!
+    const bots = [...room.match!.sim.players.values()].filter((p) => p.bot)
+    expect(bots.length).toBeGreaterThan(0)
+    const brains = brainsOf(room)
+    for (const bot of bots) expect(brains.get(bot.id)?.difficulty).toEqual(DEFAULT_DIFFICULTY)
 
     lobby.stop()
   })

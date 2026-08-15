@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { SnapPlayer, Team } from '@riftlane/shared'
-import { PLAYER_HEAD_CENTER_Y } from '@riftlane/shared'
+import { MOVE_SPEED, PLAYER_HEAD_CENTER_Y, SPRINT_SPEED_MULT } from '@riftlane/shared'
+import { decayTo } from './feel'
 import { TEAM_GLOW, type MaterialLibrary } from './materials'
 import { boxGeom, mergeMesh } from './worldKit'
 
@@ -15,14 +16,73 @@ const SOLDIER_ARMOR: Record<Team, number> = { 0: 0x5f8ce0, 1: 0xdb8a3f }
 const NAME_TEX_WIDTH = 256
 const NAME_TEX_HEIGHT = 64
 
+// ---- joints + locomotion ----------------------------------------------------
+//
+// Joint heights are measured off the authored geometry below: the thigh's top
+// face, the shoulder pad's centre, and the waist seam between pelvis and
+// chest plates. Change a joint without re-measuring and the limb detaches.
+const HIP_Y = 0.87
+const SHOULDER_Y = 1.42
+const WAIST_Y = 1.2
+const HIP_X = 0.16
+const SHOULDER_X = 0.33
+
+/** Walk phase advances with distance travelled, not with time -- a soldier
+ * strafing at half speed takes half-length strides at the same cadence
+ * instead of sprinting his legs in place. Radians of phase per metre. */
+const STRIDE_PER_METRE = 1.15
+const LEG_SWING = 0.6
+const ARM_SWING = 0.2
+/** Amplitude (not phase) is what eases in/out, so a stop freezes the stride
+ * mid-step and settles to neutral rather than snapping straight-legged. */
+const SWING_TAU = 0.11
+/** Torso aim clamp. The sim lets pitch reach +-PI/2; bending a rigid torso
+ * that far turns the silhouette into a folded chair. */
+const AIM_PITCH_MAX = 0.9
+/** performance.now() deltas run wild across a tab switch or a GC pause; one
+ * frame's worth of walk cycle is all we ever want to integrate. */
+const MAX_FRAME_DT = 0.1
+
+// ---- death collapse ---------------------------------------------------------
+const TIP_TIME = 0.45
+const TIP_BOUNCE = 0.055
+const FADE_DELAY = 0.45
+const FADE_TIME = 0.6
+
+/** Spawn protection: emissive multiplier at the top of the pulse, and the
+ * pulse rate in rad/s. Fast enough to read as "not settled yet" at a glance,
+ * shallow enough not to be mistaken for a muzzle flash. */
+const PROT_PULSE = 0.9
+const PROT_RATE = 9
+
 interface SoldierData {
-  materials: THREE.Material[]
+  /** The four shared body materials, in emissive-base order below. Every
+   * segment references these same four instances, so a camo/death fade is
+   * still four writes no matter how many groups the body is split into. */
+  materials: THREE.MeshStandardMaterial[]
   visorMat: THREE.MeshStandardMaterial
+  /** Authored emissiveIntensity per material, so the spawn-protection pulse
+   * can scale from a known floor and restore it exactly. */
+  emissiveBase: number[]
+  upper: THREE.Group
+  /** Index 0 = the -X side, 1 = +X, matching the build loops. */
+  legs: THREE.Group[]
+  arms: THREE.Group[]
   flagProp: THREE.Group
   flagMat: THREE.MeshStandardMaterial
   nameSprite: THREE.Sprite
   nameMat: THREE.SpriteMaterial
   lastName: string
+  phase: number
+  swing: number
+  /** Seconds into the death collapse; -1 = alive, or collapse finished. */
+  deathT: number
+  wasAlive: boolean
+  /** performance.now()/1000 at the last update; -1 before the first frame. */
+  lastT: number
+  /** Last emissive multiplier written, so a soldier with no spawn protection
+   * costs one float compare per frame instead of five material writes. */
+  protMult: number
 }
 
 interface Kit {
@@ -32,30 +92,39 @@ interface Kit {
   trim: THREE.BufferGeometry[]
 }
 
+interface Mats {
+  armor: THREE.MeshStandardMaterial
+  hull: THREE.MeshStandardMaterial
+  plate: THREE.MeshStandardMaterial
+  trim: THREE.MeshStandardMaterial
+}
+
+const PART_LABELS = ['armor', 'hull', 'plate', 'trim'] as const
+
 function cyl(r0: number, r1: number, h: number, seg: number): THREE.CylinderGeometry {
   return new THREE.CylinderGeometry(r0, r1, h, seg)
+}
+
+function newKit(): Kit {
+  return { armor: [], hull: [], plate: [], trim: [] }
 }
 
 /** Legs: thigh, shin, boot, kneepad. Built per side so the silhouette reads
  * as a figure rather than a capsule at every distance. */
 function addLeg(kit: Kit, side: number): void {
-  kit.hull.push(boxGeom(0.2, 0.5, 0.24, side * 0.16, 0.62, 0))
-  kit.hull.push(boxGeom(0.17, 0.46, 0.2, side * 0.16, 0.26, 0.015))
-  kit.plate.push(boxGeom(0.23, 0.11, 0.36, side * 0.16, 0.055, 0.06))
-  kit.armor.push(boxGeom(0.2, 0.15, 0.08, side * 0.16, 0.47, 0.12))
+  kit.hull.push(boxGeom(0.2, 0.5, 0.24, side * HIP_X, 0.62, 0))
+  kit.hull.push(boxGeom(0.17, 0.46, 0.2, side * HIP_X, 0.26, 0.015))
+  kit.plate.push(boxGeom(0.23, 0.11, 0.36, side * HIP_X, 0.055, 0.06))
+  kit.armor.push(boxGeom(0.2, 0.15, 0.08, side * HIP_X, 0.47, 0.12))
 }
 
-/** Arms angled forward into a two-handed grip, with a shoulder pad that
- * breaks the torso outline. */
+/** Arm limb angled forward into a two-handed grip. The shoulder pad lives on
+ * the torso instead (addTorso): it sits on the joint, so swinging it with the
+ * limb would wobble the outline rather than read as an arm moving. */
 function addArm(kit: Kit, side: number): void {
-  const pad = boxGeom(0.27, 0.21, 0.31, 0, 0, 0)
-  pad.rotateZ(side * -0.28)
-  pad.translate(side * 0.34, 1.49, 0)
-  kit.armor.push(pad)
-
   const upper = boxGeom(0.15, 0.34, 0.16, 0, 0, 0)
   upper.rotateX(0.25)
-  upper.translate(side * 0.33, 1.24, 0.03)
+  upper.translate(side * SHOULDER_X, 1.24, 0.03)
   kit.hull.push(upper)
 
   const fore = boxGeom(0.14, 0.32, 0.15, 0, 0, 0)
@@ -66,13 +135,16 @@ function addArm(kit: Kit, side: number): void {
   kit.plate.push(boxGeom(0.13, 0.11, 0.15, side * 0.23, 0.97, 0.35))
 }
 
-function buildKit(): Kit {
-  const kit: Kit = { armor: [], hull: [], plate: [], trim: [] }
-
-  addLeg(kit, -1)
-  addLeg(kit, 1)
-  addArm(kit, -1)
-  addArm(kit, 1)
+/** Everything from the pelvis up that does not swing: shoulder pads, layered
+ * torso, thruster backpack, helmet, the held weapon stub, and the team-colour
+ * trim strips. */
+function addTorso(kit: Kit): void {
+  for (const s of [-1, 1]) {
+    const pad = boxGeom(0.27, 0.21, 0.31, 0, 0, 0)
+    pad.rotateZ(s * -0.28)
+    pad.translate(s * 0.34, 1.49, 0)
+    kit.armor.push(pad)
+  }
 
   kit.armor.push(boxGeom(0.45, 0.24, 0.31, 0, 0.95, 0))
   kit.hull.push(boxGeom(0.49, 0.1, 0.34, 0, 0.87, 0))
@@ -118,8 +190,41 @@ function buildKit(): Kit {
     kit.trim.push(boxGeom(0.2, 0.05, 0.02, s * 0.34, 1.58, 0.14))
     kit.trim.push(boxGeom(0.02, 0.03, 0.14, s * 0.26, 0.83, 0))
   }
+}
 
-  return kit
+/**
+ * Merges one body segment down to one mesh per material and re-origins it on
+ * its joint, so the returned group can be rotated about a real hip/shoulder/
+ * waist by updateSoldier's walk cycle. All four materials are shared with
+ * every other segment, so splitting the body costs draw calls, never extra
+ * material state.
+ */
+function buildSegment(kit: Kit, mats: Mats, name: string, px: number, py: number): THREE.Group {
+  const group = new THREE.Group()
+  group.name = name
+  group.position.set(px, py, 0)
+
+  const buckets: [THREE.BufferGeometry[], THREE.MeshStandardMaterial, boolean][] = [
+    [kit.armor, mats.armor, true],
+    [kit.hull, mats.hull, true],
+    [kit.plate, mats.plate, false],
+    [kit.trim, mats.trim, false],
+  ]
+  for (let i = 0; i < buckets.length; i++) {
+    const [geoms, mat, casts] = buckets[i]
+    const mesh = mergeMesh(geoms, mat, `${name}:${PART_LABELS[i]}`)
+    if (!mesh) continue
+    // Every part above is authored in soldier-root metres (0 = the feet);
+    // pull it back onto the joint so rotating the group swings the limb
+    // instead of orbiting it around the character's ankles.
+    mesh.geometry.translate(-px, -py, 0)
+    mesh.receiveShadow = true
+    // Only the two mass-carrying materials cast: the silhouette is identical
+    // and it halves this soldier's cost in the shadow pass.
+    mesh.castShadow = casts
+    group.add(mesh)
+  }
+  return group
 }
 
 function makeFlagProp(mat: THREE.MeshStandardMaterial, poleMat: THREE.Material): THREE.Group {
@@ -155,17 +260,27 @@ function makeFlagProp(mat: THREE.MeshStandardMaterial, poleMat: THREE.Material):
 /**
  * Authored soldier: legs, pelvis, layered torso, shoulder pads, forward-held
  * arms with a weapon stub, thruster backpack and a crested visor helmet.
- * Geometry is merged down to five draw calls (armour / dark hull / light
- * plate / emissive trim / visor) so seven remote players cost ~35 calls
- * instead of ~200.
+ *
+ * The body is split into five articulated groups (two legs, two arms, and an
+ * upper body that carries the head and the arms) so updateSoldier can run a
+ * procedural walk cycle and an aim pitch on it. Geometry inside each group is
+ * still merged per material, which costs ~15 draw calls per soldier instead
+ * of the ~200 an unmerged build would -- the four body materials plus the
+ * visor are shared across every group, so the split adds draw calls only,
+ * never material state.
  *
  * Built once per remote player at match_start and mutated in place by
  * updateSoldier() every frame -- never recreated. Materials are per-soldier
- * (camo mutates opacity per player) but share the library's textures, which
- * is safe because every soldier is disposed together at teardown.
+ * (camo, the death fade and the spawn-protection pulse all mutate them per
+ * player) but share the library's textures, which is safe because every
+ * soldier is disposed together at teardown.
  */
 export function makeSoldier(team: Team, lib: MaterialLibrary): THREE.Group {
   const group = new THREE.Group()
+  // Yaw first, then the death tip about the soldier's OWN sideways axis --
+  // the default XYZ order would tip him about world X and drop him sideways
+  // at every facing but due north.
+  group.rotation.order = 'YXZ'
 
   // The panel texture's dark #39404f base multiplies the armor color down and
   // metalness has no envMap to reflect, so lit-only team color reads black at
@@ -218,24 +333,37 @@ export function makeSoldier(team: Team, lib: MaterialLibrary): THREE.Group {
     transparent: true,
   })
 
-  const kit = buildKit()
-  const armor = mergeMesh(kit.armor, armorMat, 'armor')
-  const hull = mergeMesh(kit.hull, hullMat, 'hull')
-  const plate = mergeMesh(kit.plate, plateMat, 'plate')
-  const trim = mergeMesh(kit.trim, trimMat, 'trim')
-  for (const mesh of [armor, hull, plate, trim]) {
-    if (!mesh) continue
-    mesh.receiveShadow = true
-    group.add(mesh)
-  }
-  // Only the two mass-carrying meshes cast: the silhouette is identical and
-  // it halves this soldier's cost in the shadow pass.
-  if (armor) armor.castShadow = true
-  if (hull) hull.castShadow = true
+  const mats: Mats = { armor: armorMat, hull: hullMat, plate: plateMat, trim: trimMat }
 
-  const visor = new THREE.Mesh(boxGeom(0.31, 0.12, 0.09, 0, PLAYER_HEAD_CENTER_Y + 0.02, 0.2), visorMat)
+  const torsoKit = newKit()
+  addTorso(torsoKit)
+  const upper = buildSegment(torsoKit, mats, 'upper', 0, WAIST_Y)
+
+  const visor = new THREE.Mesh(
+    boxGeom(0.31, 0.12, 0.09, 0, PLAYER_HEAD_CENTER_Y + 0.02 - WAIST_Y, 0.2),
+    visorMat
+  )
   visor.name = 'visor'
-  group.add(visor)
+  upper.add(visor)
+
+  const arms: THREE.Group[] = []
+  const legs: THREE.Group[] = []
+  for (const side of [-1, 1]) {
+    const armKit = newKit()
+    addArm(armKit, side)
+    const arm = buildSegment(armKit, mats, `arm${side}`, side * SHOULDER_X, SHOULDER_Y)
+    // Parented to the torso, so its own joint is measured from the waist.
+    arm.position.y -= WAIST_Y
+    upper.add(arm)
+    arms.push(arm)
+
+    const legKit = newKit()
+    addLeg(legKit, side)
+    const leg = buildSegment(legKit, mats, `leg${side}`, side * HIP_X, HIP_Y)
+    group.add(leg)
+    legs.push(leg)
+  }
+  group.add(upper)
 
   const flagMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
@@ -255,36 +383,136 @@ export function makeSoldier(team: Team, lib: MaterialLibrary): THREE.Group {
   nameSprite.renderOrder = 10
   group.add(nameSprite)
 
+  const materials = [armorMat, hullMat, plateMat, trimMat]
   const data: SoldierData = {
-    materials: [armorMat, hullMat, plateMat, trimMat],
+    materials,
     visorMat,
+    emissiveBase: [...materials, visorMat].map((m) => m.emissiveIntensity),
+    upper,
+    legs,
+    arms,
     flagProp,
     flagMat,
     nameSprite,
     nameMat,
     lastName: '',
+    phase: 0,
+    swing: 0,
+    deathT: -1,
+    wasAlive: false,
+    lastT: -1,
+    protMult: 1,
   }
   group.userData.soldier = data
 
   return group
 }
 
+/** Tip angle of the death collapse: an ease-out to face-down with a short
+ * settle bounce that dies out as the body lands. */
+function tipAngle(deathT: number): number {
+  const t = Math.min(1, deathT / TIP_TIME)
+  const eased = 1 - (1 - t) * (1 - t)
+  return (Math.PI / 2) * (eased + Math.sin(t * Math.PI * 3) * TIP_BOUNCE * (1 - t))
+}
+
+/** Back to a standing, un-tipped, mid-stride-free pose. Called on the frame a
+ * dead soldier comes back alive -- the collapse leaves the root tipped and
+ * the limbs frozen wherever the last walk frame put them. */
+function resetPose(group: THREE.Group, data: SoldierData): void {
+  data.deathT = -1
+  data.phase = 0
+  data.swing = 0
+  group.rotation.x = 0
+  data.upper.rotation.x = 0
+  for (const leg of data.legs) leg.rotation.x = 0
+  for (const arm of data.arms) arm.rotation.x = 0
+}
+
+/** Procedural walk cycle + aim pitch. Legs swing opposed about the hips, the
+ * arms counter-swing a fraction of that (they are locked into a two-handed
+ * grip on a weapon the torso carries, so a full swing would tear the hands
+ * off it), and the upper body pitches so an enemy visibly aims up or down. */
+function animatePose(data: SoldierData, snap: SnapPlayer, dt: number): void {
+  const speed = Math.hypot(snap.vel.x, snap.vel.z)
+  data.phase += speed * dt * STRIDE_PER_METRE
+  const target = Math.min(SPRINT_SPEED_MULT, speed / MOVE_SPEED)
+  data.swing = decayTo(data.swing, target, dt, SWING_TAU)
+
+  const stride = Math.sin(data.phase) * data.swing
+  data.legs[0].rotation.x = stride * LEG_SWING
+  data.legs[1].rotation.x = -stride * LEG_SWING
+  data.arms[0].rotation.x = -stride * ARM_SWING
+  data.arms[1].rotation.x = stride * ARM_SWING
+
+  data.upper.rotation.x = -Math.max(-AIM_PITCH_MAX, Math.min(AIM_PITCH_MAX, snap.pitch))
+}
+
 /** Mutates `group` (built by makeSoldier) to match one snapshot frame:
- * position/yaw, hidden when dead, translucent when camo'd, flag rig shown
- * for the carried team's color, and a name sprite for humans only (bots
- * never get one -- brief calls for "name sprites for humans only"). */
+ * position/yaw, walk cycle and aim pitch while alive, a collapse-then-fade on
+ * death, translucent when camo'd, an emissive pulse while spawn-protected,
+ * flag rig shown for the carried team's color, and a name sprite for humans
+ * only (bots never get one -- brief calls for "name sprites for humans
+ * only").
+ *
+ * Its own frame delta comes from performance.now() rather than a dt argument:
+ * every animation here is client-side cosmetics keyed to one soldier, and the
+ * caller's render loop has no per-soldier clock to hand down. Clamped to
+ * MAX_FRAME_DT so a backgrounded tab does not integrate a minute of walk
+ * cycle on the frame it returns. */
 export function updateSoldier(group: THREE.Group, snap: SnapPlayer): void {
   const data = group.userData.soldier as SoldierData
-  group.visible = snap.alive
-  if (!snap.alive) return
+  const now = performance.now() / 1000
+  const dt = data.lastT < 0 ? 0 : Math.min(MAX_FRAME_DT, now - data.lastT)
+  data.lastT = now
 
-  group.position.set(snap.pos.x, snap.pos.y, snap.pos.z)
-  group.rotation.y = snap.yaw
+  if (snap.alive) {
+    if (!data.wasAlive) resetPose(group, data)
+    data.wasAlive = true
+    group.visible = true
+    group.position.set(snap.pos.x, snap.pos.y, snap.pos.z)
+    group.rotation.y = snap.yaw
+    animatePose(data, snap, dt)
+  } else {
+    if (data.wasAlive) {
+      data.wasAlive = false
+      data.deathT = 0
+    }
+    // deathT < 0 here means the collapse already finished (or this soldier
+    // joined already dead) -- nothing left to animate.
+    if (data.deathT < 0) {
+      group.visible = false
+      return
+    }
+    // The body stays where it fell: position/yaw are deliberately not
+    // re-read, so a corpse does not slide toward the respawn point.
+    data.deathT += dt
+    group.rotation.x = tipAngle(data.deathT)
+    if (data.deathT >= FADE_DELAY + FADE_TIME) {
+      data.deathT = -1
+      group.visible = false
+      return
+    }
+  }
 
-  const opacity = snap.camo ? CAMO_OPACITY : 1
+  const fade =
+    data.deathT < 0 ? 1 : 1 - Math.max(0, Math.min(1, (data.deathT - FADE_DELAY) / FADE_TIME))
+  const opacity = (snap.camo ? CAMO_OPACITY : 1) * fade
   for (const mat of data.materials) mat.opacity = opacity
   data.visorMat.opacity = opacity
   data.flagMat.opacity = opacity
+
+  // Spawn protection reads as a shimmer rather than a badge: the same team
+  // colour the soldier already wears, breathing. Skipped entirely (one float
+  // compare) once the multiplier has settled back to its authored floor.
+  const protMult = snap.prot ? 1 + PROT_PULSE * (0.5 + 0.5 * Math.sin(now * PROT_RATE)) : 1
+  if (protMult !== data.protMult) {
+    data.protMult = protMult
+    for (let i = 0; i < data.materials.length; i++) {
+      data.materials[i].emissiveIntensity = data.emissiveBase[i] * protMult
+    }
+    data.visorMat.emissiveIntensity = data.emissiveBase[data.materials.length] * protMult
+  }
 
   data.flagProp.visible = snap.carryingFlag !== null
   if (snap.carryingFlag !== null) {

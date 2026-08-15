@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import type { WeaponId } from '@riftlane/shared'
 import { WEAPONS } from '@riftlane/shared'
+import { decayTo } from './feel'
 import type { MaterialLibrary } from './materials'
 import { boxGeom, mergeMesh } from './worldKit'
 
@@ -26,7 +27,11 @@ interface Parts {
   muzzleY: number
 }
 
-function accentColor(id: WeaponId): number {
+/** One hue per weapon, spread evenly around the wheel. Exported because the
+ * pickup pads in effects.ts colour their ring and hologram with it -- a
+ * railspike pad glowing the same green the held railspike glows is how a
+ * player learns which pad is which from across the map. */
+export function accentColor(id: WeaponId): number {
   const idx = Math.max(0, WEAPON_ORDER.indexOf(id))
   return new THREE.Color().setHSL(idx / WEAPON_ORDER.length, 0.72, 0.55).getHex()
 }
@@ -199,26 +204,29 @@ function attachGeneratedRifle(
     })
 }
 
+/** One of three families keyed off WeaponDef.kind so all ten ids read as
+ * distinct hardware without ten hand-built models: power_melee gets an energy
+ * blade, projectile/charge a heavy launcher, hitscan/burst a rifle
+ * (short-barrelled for the sidearm and the SMG). */
+function partsFor(id: WeaponId): Parts {
+  const def = WEAPONS[id]
+  return def.kind === 'power_melee'
+    ? bladeParts()
+    : def.kind === 'projectile' || def.kind === 'charge'
+      ? launcherParts()
+      : rifleParts(id === 'sidearm' || id === 'pulse_smg')
+}
+
 /**
- * Authored first-person weapon, one of three families keyed off
- * WeaponDef.kind so all ten ids read as distinct hardware without ten
- * hand-built models: power_melee gets an energy blade, projectile/charge a
- * heavy launcher, hitscan/burst a rifle (short-barrelled for the sidearm and
- * the SMG). Each family merges to three meshes plus an additive muzzle
- * flare, which game.ts pulses from the fire kick.
+ * Authored first-person weapon. Each family merges to three meshes plus an
+ * additive muzzle flare, which game.ts pulses from the fire kick.
  */
 export function buildViewmodel(id: WeaponId, lib: MaterialLibrary): THREE.Group {
-  const def = WEAPONS[id]
   const group = new THREE.Group()
   group.name = `viewmodel:${id}`
   const accent = accentColor(id)
 
-  const parts =
-    def.kind === 'power_melee'
-      ? bladeParts()
-      : def.kind === 'projectile' || def.kind === 'charge'
-        ? launcherParts()
-        : rifleParts(id === 'sidearm' || id === 'pulse_smg')
+  const parts = partsFor(id)
 
   // The viewmodel hangs off the camera, so which way the sun hits it is
   // whatever the player happens to be facing. A low emissive floor keeps the
@@ -281,6 +289,43 @@ export function buildViewmodel(id: WeaponId, lib: MaterialLibrary): THREE.Group 
   }
 
   return group
+}
+
+/**
+ * The same authored hardware as buildViewmodel, flattened to ONE mesh on one
+ * caller-owned material, for the power-weapon pad holograms in effects.ts.
+ * The glow strips are dropped (and disposed): a hologram is already a single
+ * emissive colour, so a second emissive pass inside it just reads as noise.
+ * Returns null only if a family ever produces no geometry at all.
+ */
+export function buildWeaponHolo(id: WeaponId, mat: THREE.Material): THREE.Mesh | null {
+  const parts = partsFor(id)
+  for (const g of parts.glow) g.dispose()
+  return mergeMesh([...parts.shell, ...parts.metal], mat, `holo:${id}`)
+}
+
+// Muzzle-down dip while the sim's reload lockout runs. Small enough that the
+// gun never leaves the frame -- the point is that the player can see the
+// trigger is dead without reading the HUD, not a full reload animation.
+const RELOAD_PITCH = 0.35
+const RELOAD_DROP = 0.06
+const RELOAD_TAU = 0.09
+
+/**
+ * Blends the viewmodel into (and back out of) the reload dip. Reads and
+ * writes its own eased state on the group, so the caller only has to hand it
+ * the boolean it already computes for the HUD.
+ *
+ * Call AFTER positioning the group for the frame: the drop is applied on top
+ * of whatever bob/sway/kick offset was just written, not instead of it.
+ */
+export function setViewmodelReload(group: THREE.Group, reloading: boolean, dt: number): void {
+  const t = decayTo((group.userData.reloadT as number) ?? 0, reloading ? 1 : 0, dt, RELOAD_TAU)
+  group.userData.reloadT = t
+  // Barrel runs down -Z, so a negative X rotation is what points it at the
+  // floor.
+  group.rotation.x = -t * RELOAD_PITCH
+  group.position.y -= t * RELOAD_DROP
 }
 
 /** Drives the muzzle flare from the shot kick (1 = recovered, 0 = just

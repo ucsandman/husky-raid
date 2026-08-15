@@ -14,12 +14,24 @@ import {
   SWARM_POP_THRESHOLD,
 } from './constants'
 
+/** Fraction of the tangential (along-face) velocity a frag keeps when it
+ * bounces. Lives here rather than in constants.ts alongside
+ * FRAG_BOUNCE_DAMPING (the normal-component restitution) because it is
+ * meaningless outside stepProjectile's bounce math. */
+export const FRAG_BOUNCE_FRICTION = 0.8
+
 /**
  * Applies damage to a player: shield absorbs first, overflow spills to
  * health. Sets lastDamageAt (drives shield recharge delay) and breaks
  * camo. 'absorbed' is returned (no-op, no mutation) for an already-dead
  * target, e.g. splash that reaches a corpse — distinct from 'hit', which
  * covers live damage that neither breaks the shield nor kills.
+ *
+ * Respawn protection is enforced here rather than at each call site: this
+ * is the single choke point every damage source funnels through (hitscan,
+ * splash, melee, projectiles, MatchSim.damage), so a freshly respawned
+ * player cannot be shot from any of them. Absent spawnProtectedUntil reads
+ * as 0, so hand-built states and older tests are unaffected.
  */
 export function applyDamage(
   target: PlayerState,
@@ -27,6 +39,7 @@ export function applyDamage(
   now: number
 ): 'absorbed' | 'shield_break' | 'hit' | 'killed' {
   if (!target.alive) return 'absorbed'
+  if ((target.spawnProtectedUntil ?? 0) > now) return 'absorbed'
 
   target.lastDamageAt = now
   target.camoUntil = 0
@@ -192,6 +205,40 @@ export interface Projectile {
   stuckToId?: string
 }
 
+/**
+ * Reflects a frag off the box face it actually crossed this tick. The face
+ * is found by the slab method against `prev` (the pre-integration position):
+ * the entry axis is the one whose boundary the frag crossed LAST, i.e. the
+ * largest entry t. Only that axis is flipped (scaled by
+ * FRAG_BOUNCE_DAMPING); the two tangential axes keep their direction and
+ * just lose FRAG_BOUNCE_FRICTION. The frag is also snapped back onto the
+ * face it entered through, so it never sits inside the box and re-bounce
+ * itself into a jitter loop. Bug fix: the old code negated the whole
+ * velocity vector, so a frag thrown forward-and-down came off the floor
+ * flying back at the thrower.
+ */
+function bounceFrag(pr: Projectile, prev: Vec3, box: AABB): void {
+  const axes: (keyof Vec3)[] = ['x', 'y', 'z']
+  let hitAxis: keyof Vec3 = 'y'
+  let bestT = -Infinity
+  for (const axis of axes) {
+    const v = pr.vel[axis]
+    if (Math.abs(v) < 1e-9) continue
+    const boundary = v > 0 ? box.min[axis] : box.max[axis]
+    const t = (boundary - prev[axis]) / v
+    if (t > bestT) {
+      bestT = t
+      hitAxis = axis
+    }
+  }
+
+  const face = pr.vel[hitAxis] > 0 ? box.min[hitAxis] : box.max[hitAxis]
+  const vel = scale(pr.vel, FRAG_BOUNCE_FRICTION)
+  vel[hitAxis] = -pr.vel[hitAxis] * FRAG_BOUNCE_DAMPING
+  pr.vel = vel
+  pr.pos = { ...pr.pos, [hitAxis]: face }
+}
+
 function steerTowards(curDir: Vec3, targetDir: Vec3, maxAngle: number): Vec3 {
   const cosAngle = clamp(dot(curDir, targetDir), -1, 1)
   const angle = Math.acos(cosAngle)
@@ -234,12 +281,13 @@ export function stepProjectile(
     return { exploded: now >= pr.fuseAt }
   }
 
+  const prevPos = { ...pr.pos }
   pr.pos = add(pr.pos, scale(pr.vel, dt))
 
   if (pr.kind === 'frag') {
     for (const box of boxes) {
       if (pointInBox(pr.pos, box)) {
-        pr.vel = scale(pr.vel, -FRAG_BOUNCE_DAMPING)
+        bounceFrag(pr, prevPos, box)
         break
       }
     }

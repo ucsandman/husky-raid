@@ -39,6 +39,10 @@ document.addEventListener(
   () => {
     audioEngine.init()
     announcer.init()
+    // The phase subscriber below also sets the bed, but it only fires on a
+    // CHANGE -- and the first gesture almost always happens while still on
+    // the menu screen the page loaded into, which is no change at all.
+    audioEngine.setAmbient(store.state.phase === 'playing' ? 'match' : 'menu')
   },
   { once: true, capture: true }
 )
@@ -58,7 +62,11 @@ const canvas = document.getElementById('game-canvas')
 if (!appRoot) throw new Error('missing #app root')
 if (!(canvas instanceof HTMLCanvasElement)) throw new Error('missing #game-canvas')
 
-const inputManager = new InputManager(canvas, () => store.state.settings.sensitivity)
+const inputManager = new InputManager(
+  canvas,
+  () => store.state.settings.sensitivity,
+  () => store.state.settings.padSensitivity
+)
 
 const net = connect(SERVER_URL)
 const game = new Game(canvas, inputManager, net)
@@ -86,6 +94,12 @@ store.subscribe((state) => {
     game.teardown()
     if (document.pointerLockElement === canvas) document.exitPointerLock()
   }
+  // Ambient bed follows the screen. Set after the teardown above, which
+  // clears the match bed on its way out -- this is what puts the menu one
+  // back. A no-op before the first gesture (the AudioContext doesn't exist
+  // yet); the pointerdown handler's init() is followed by the next phase
+  // change, and setAmbient is idempotent per mode.
+  audioEngine.setAmbient(playing ? 'match' : 'menu')
   lastPhase = state.phase
 })
 
@@ -191,7 +205,9 @@ net.onMsg((msg: ServerMsg) => {
       })
       game.start(msg)
       announcer.reset()
-      announcer.speak('match_start')
+      // The "Fight!" bark now belongs to the match_go event (game.ts), not
+      // to match_start: a match opens on a WARMUP_SEC countdown, and
+      // shouting Fight five seconds before combat is live is a lie.
       break
     case 'snapshot':
       store.set({ snapshotCount: store.state.snapshotCount + 1 })

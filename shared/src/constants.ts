@@ -1,6 +1,14 @@
 export const TICK_RATE = 30
 export const TICK_DT = 1 / 30
 export const SNAPSHOT_RATE = 20
+/** Pre-combat warmup: players can move but not fire/grab flags; HUD counts
+ * it down and flips to FIGHT on the match_go event. */
+export const WARMUP_SEC = 5
+/** Respawn protection window (absolute-timestamp field spawnProtectedUntil);
+ * cleared early the moment the protected player fires. */
+export const SPAWN_PROTECT_SEC = 2
+/** XZ radius within which an alive player collects a power-weapon pad. */
+export const PICKUP_RADIUS = 1.4
 export const MOVE_SPEED = 7
 // Flag carriers move at full speed, as in Halo -- they already pay for the
 // flag by being unable to shoot at all. Measured over 5 seeded 8-bot matches,

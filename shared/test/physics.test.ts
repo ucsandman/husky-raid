@@ -10,7 +10,7 @@ import {
   CLAMBER_CHECK_DISTANCE,
 } from '../src/constants'
 import { makeTestPlayer, makeInput } from './helpers'
-import type { PlayerState } from '../src/types'
+import type { PlayerInput, PlayerState } from '../src/types'
 import type { GameMap } from '../src/map'
 
 // Forward convention: yaw=0 -> +z. Matches gutter's team-0 spawn, which
@@ -424,5 +424,63 @@ describe('airborne clamber', () => {
     const pos = { x: wall.max.x + CLAMBER_CHECK_DISTANCE, y: 0, z: -10 }
     const wishDir = { x: -1, y: 0, z: 0 }
     expect(tryClamber(pos, wishDir, MAPS.gutter.boxes)).toBeNull()
+  })
+})
+
+describe('analog movement', () => {
+  // Bare flat map so the movement model is measured on its own, same reason
+  // as the diagonal test above.
+  const flat: GameMap = {
+    name: 'flat',
+    boxes: [{ min: { x: -60, y: -1, z: -60 }, max: { x: 60, y: 0, z: 60 } }],
+    boxColors: [0x777777],
+    launchPads: [],
+    teleporters: [],
+    spawns: [[], []],
+    spawnYaw: [0, Math.PI],
+    flagStands: [
+      { x: 0, y: 0, z: -10 },
+      { x: 0, y: 0, z: 10 },
+    ],
+    deathY: -30,
+    waypoints: [],
+    edges: [],
+  }
+
+  /** Settled horizontal speed after holding one input long enough to converge. */
+  function terminalSpeed(input: Partial<PlayerInput>): number {
+    const p = makeTestPlayer({ pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 } })
+    for (let i = 0; i < 60; i++) {
+      stepMovement(p, makeInput({ yaw: 0, ...input }), flat, TICK_DT)
+    }
+    return Math.hypot(p.vel.x, p.vel.z)
+  }
+
+  it('leaves keyboard input untouched: a diagonal still walks at full speed', () => {
+    // A keyboard diagonal has magnitude sqrt(2), so Math.min(1, ...) clamps
+    // the throttle to exactly 1 and the diagonal matches a cardinal walk --
+    // this is what makes the analog scaling a no-op for every keyboard player.
+    expect(terminalSpeed({ forward: 1 })).toBeCloseTo(MOVE_SPEED, 6)
+    expect(terminalSpeed({ forward: 1, strafe: 1 })).toBeCloseTo(MOVE_SPEED, 6)
+    expect(terminalSpeed({ forward: 1, strafe: -1 })).toBeCloseTo(MOVE_SPEED, 6)
+  })
+
+  it('scales speed by stick magnitude for a partly pushed stick', () => {
+    expect(terminalSpeed({ forward: 0.5 })).toBeCloseTo(MOVE_SPEED * 0.5, 6)
+    expect(terminalSpeed({ forward: 0.3, strafe: 0.4 })).toBeCloseTo(MOVE_SPEED * 0.5, 6)
+  })
+
+  it('a dead stick stands still instead of dividing by zero', () => {
+    const p = makeTestPlayer({ pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 } })
+    stepMovement(p, makeInput({ yaw: 0, forward: 0, strafe: 0 }), flat, TICK_DT)
+    expect(Number.isFinite(p.pos.x)).toBe(true)
+    expect(Number.isFinite(p.pos.z)).toBe(true)
+    expect(Math.hypot(p.vel.x, p.vel.z)).toBe(0)
+  })
+
+  it('clamps out-of-range axes so an oversized input is not a speed hack', () => {
+    // input.forward/strafe arrive over the wire from an untrusted client.
+    expect(terminalSpeed({ forward: 50 })).toBeCloseTo(MOVE_SPEED, 6)
+    expect(terminalSpeed({ forward: -50 })).toBeCloseTo(MOVE_SPEED, 6)
   })
 })

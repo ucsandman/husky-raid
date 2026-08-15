@@ -15,9 +15,9 @@ import { createScene, type SceneCtx } from './render/scene'
 import { buildMap } from './render/mapMesh'
 import { makeSoldier, updateSoldier } from './render/soldier'
 import { EffectsSystem } from './render/effects'
-import { buildViewmodel, setViewmodelFlare } from './render/viewmodel'
+import { buildViewmodel, setViewmodelFlare, setViewmodelReload } from './render/viewmodel'
 import { disposeObject3D } from './render/dispose'
-import { ShakeRig, bearing, decayTo } from './render/feel'
+import { bearing, decayTo } from './render/feel'
 import type { InputManager } from './input'
 import type { Net } from './net'
 import { ClientPrediction } from './predict'
@@ -48,11 +48,6 @@ const LANDING_DIP_DEPTH = 0.16 // meters, camera Y dip on landing
 const LANDING_DIP_VIEWMODEL_SCALE = 0.6
 const LANDING_FALL_VEL = -4.5 // m/s downward velocity that counts as "falling"
 const LANDING_SETTLE_VEL = 0.6 // |vel.y| this small right after a fast fall means the fall was arrested
-const LANDING_TRAUMA = 0.25
-const DAMAGE_TRAUMA = 0.45
-const KILL_CONFIRM_TRAUMA = 0.18 // small punch on a confirmed local kill, below DAMAGE_TRAUMA
-const EXPLOSION_TRAUMA_MAX = 0.75
-const EXPLOSION_TRAUMA_RADIUS = 9 // meters -- cosmetic shake falloff only, not the sim's real splash radius
 const DAMAGE_ATTRIBUTION_RADIUS = 10 // meters -- "plausible source" radius for the damage-direction indicator
 const RECOIL_DECAY_TAU = 0.09 // seconds
 const RECOIL_MAX = 0.09 // radians, hard cap so rapid-fire weapons can't stack recoil into a wild swing
@@ -60,9 +55,8 @@ const SWAY_SMOOTH_TAU = 0.12
 const SWAY_SCALE = 0.045
 const SWAY_MAX = 0.02 // meters
 
-/** Relative fire-kick severity per weapon (0..1ish), scales both the
- * screenshake trauma and the recoil pitch kick -- one table instead of two
- * so a weapon can't have loud shake but no recoil or vice versa. */
+/** Relative fire-kick severity per weapon (0..1ish), scales the recoil
+ * pitch kick. */
 const FIRE_KICK_SEVERITY: Record<WeaponId, number> = {
   pulse_smg: 0.4,
   sidearm: 0.35,
@@ -78,7 +72,6 @@ const FIRE_KICK_SEVERITY: Record<WeaponId, number> = {
 /** Seconds between per-bullet hit sparks on the SAME target. Roughly two
  * pulse_smg shots (rof 10) so a stream still reads as continuous. */
 const HIT_SPARK_MIN_INTERVAL = 0.06
-const FIRE_TRAUMA_BASE = 0.22
 const FIRE_RECOIL_BASE = 0.03 // radians
 
 // Audio-only heuristics: teleport/launchpad have no SimEvent on the wire, so
@@ -98,6 +91,13 @@ const WEAPON_SOUND: Record<WeaponId, SoundName> = {
   swarm_pod: 'shot_boom',
   arc_blade: 'blade_lunge',
   grav_maul: 'melee_swing',
+}
+
+/** Structural shim for the power-pickup pad renderer that render/effects.ts
+ * gains in stage 3. Declared here so the single call site below compiles
+ * both before and after that method exists. */
+interface PickupPadSync {
+  syncPickups?(defs: NonNullable<GameMap['powerPickups']>, available: boolean[]): void
 }
 
 function eyePos(pos: Vec3): Vec3 {
@@ -141,7 +141,6 @@ export class Game {
   private hud: Hud | null = null
 
   // ---- game-feel state (client-only juice, see feel.ts) -------------------
-  private shakeRig = new ShakeRig()
   private recoilPitch = 0 // radians, decays exponentially toward 0
   private baseFov = 90 // matches render/scene.ts's FOV_DEGREES; immediately overwritten in start()
   private fovBump = 0 // additive degrees, lerped from horizontal speed
@@ -162,6 +161,23 @@ export class Game {
   private adsSensitivityMult = 1 // tan(halfFovScoped)/tan(halfFovBase); computed in start() once baseFov is known
   private baseSensitivity = store.state.settings.sensitivity // last known un-scoped sensitivity, restored on scope release
   private wasScoped = false
+
+  // ---- pad + phase state ------------------------------------------------
+  /** Reticle sat on a player last frame; feeds pad aim assist. One frame
+   * stale by construction (the raycast needs this frame's camera), which is
+   * ~16ms of an assist that is itself a gentle rate scale -- not felt. */
+  private padOnTarget = false
+  /** Pause panel opened with the pad's Start button. Kept apart from the
+   * pointer-lock check: a pad player never holds lock, so lock alone can't
+   * decide whether the panel is up. */
+  private padPaused = false
+  /** Whole seconds left in warmup as of the last snapshot, for the tick SFX. */
+  private lastCountdownSec: number | null = null
+  /** The "Fight!" bark fires once per match, on match_go (or on the first
+   * snapshot of a server that runs no warmup at all). */
+  private matchGoAnnounced = false
+  /** Previous snapshot's per-pad availability, for the respawn chime. */
+  private prevPickups: boolean[] = []
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -199,13 +215,26 @@ export class Game {
     this.bobPhase = 0
     this.kickT = 1
     this.hud = new Hud()
+    this.hud.setResumeHandler(() => {
+      // Covers both ways the panel opens: pointer lock lost (re-request it)
+      // and the pad's Start button (just close the panel).
+      this.padPaused = false
+      this.canvas.requestPointerLock().catch(() => {
+        // Refused mid-Escape-lockout; the overlay simply stays up.
+      })
+    })
+    this.hud.setLeaveHandler(() => {
+      this.padPaused = false
+      this.net.send({ t: 'leave' })
+      // Same patch shape main.ts uses when a dropped socket sends everyone
+      // back to the menu -- the phase change is what tears the match down.
+      store.set({ phase: 'menu', roomCode: null, hostId: null, players: [] })
+    })
 
-    this.shakeRig = new ShakeRig()
     this.recoilPitch = 0
-    this.baseFov = sceneCtx.camera.fov
+    this.setBaseFov(store.state.settings.fov)
     this.fovBump = 0
     this.adsZoomT = 0
-    this.adsSensitivityMult = Math.tan(degToRad(ADS_FOV) / 2) / Math.tan(degToRad(this.baseFov) / 2)
     this.baseSensitivity = store.state.settings.sensitivity
     this.wasScoped = false
     this.landingDipT = 1
@@ -214,19 +243,95 @@ export class Game {
     this.prevLookPitch = look.pitch
     this.swayX = 0
     this.swayY = 0
+    this.padOnTarget = false
+    this.padPaused = false
+    this.lastCountdownSec = null
+    this.matchGoAnnounced = false
+    this.prevPickups = []
 
     this.lastTime = performance.now()
     this.raf = requestAnimationFrame(this.loop)
+  }
+
+  /** Applies a vertical-FOV setting (ui/menu.ts's slider, persisted in
+   * state.ts) to the camera and to everything derived from it. Called on
+   * match start and again whenever the pause-panel slider moves, so a
+   * mid-match change is visible on the next frame. */
+  private setBaseFov(fov: number): void {
+    this.baseFov = fov
+    if (this.sceneCtx) {
+      this.sceneCtx.camera.fov = fov
+      this.sceneCtx.camera.updateProjectionMatrix()
+    }
+    // ADS zoom is a fixed absolute FOV, so the sensitivity ratio it implies
+    // moves with the base -- recompute both halves together or a wide-FOV
+    // player gets the narrow-FOV player's scoped sensitivity.
+    this.adsSensitivityMult = Math.tan(degToRad(ADS_FOV) / 2) / Math.tan(degToRad(fov) / 2)
+    this.input.setAdsSensitivityMult(this.adsSensitivityMult)
   }
 
   onSnapshot(msg: SnapshotMsg): void {
     const prevSnap = this.latestSnapshot
     this.latestSnapshot = msg
     this.prediction.onSnapshot(msg)
+    this.playPhaseAudio(msg)
+    this.playPickupAudio(msg, prevSnap)
     this.playSnapshotAudio(msg, prevSnap)
     this.detectLocalHit(msg, prevSnap)
     this.detectDamageTaken(msg, prevSnap)
     this.detectLanding(msg, prevSnap)
+  }
+
+  /** Warmup countdown SFX + the one-per-match "Fight!" bark. Driven off
+   * snapshots rather than the render loop so a tick fires once per whole
+   * second, not once per frame that happens to straddle one. */
+  private playPhaseAudio(msg: SnapshotMsg): void {
+    const phase = msg.phase ?? 'playing'
+    if (phase === 'warmup') {
+      const sec = Math.max(0, Math.ceil(msg.timeLeft))
+      if (sec !== this.lastCountdownSec) {
+        audioEngine.play('countdown_tick')
+        this.lastCountdownSec = sec
+      }
+      return
+    }
+    this.lastCountdownSec = null
+    // match_go is the real trigger. The `!this.matchGoAnnounced` fallback
+    // covers a server that runs no warmup at all (phase absent, no event),
+    // which would otherwise start a match in silence.
+    if (msg.events.some((ev) => ev.type === 'match_go') || !this.matchGoAnnounced) {
+      this.matchGoAnnounced = true
+      audioEngine.play('match_go')
+      announcer.speak('match_start')
+    }
+  }
+
+  /** Power-weapon pads: the toast + chime when one is taken, and a quieter
+   * positional cue when a pad comes back up. Availability has no SimEvent,
+   * so the respawn half is a diff of SnapshotMsg.pickups against the
+   * previous snapshot -- same shape as the shield/teleport heuristics. */
+  private playPickupAudio(msg: SnapshotMsg, prevSnap: SnapshotMsg | null): void {
+    const localRaw = msg.players.find((p) => p.id === this.localId)
+    const listener = localRaw ? { pos: eyePos(localRaw.pos), yaw: localRaw.yaw } : undefined
+
+    for (const ev of msg.events) {
+      if (ev.type !== 'pickup') continue
+      const taker = msg.players.find((p) => p.id === ev.playerId)
+      audioEngine.play('pickup_taken', taker ? { pos: eyePos(taker.pos), listener } : undefined)
+      this.hud?.notifyPickup(WEAPONS[ev.weapon].name, ev.playerId === this.localId)
+    }
+
+    const pads = this.map?.powerPickups
+    const avail = msg.pickups
+    if (!pads || !avail) return
+    if (prevSnap) {
+      for (let i = 0; i < avail.length && i < pads.length; i++) {
+        if (avail[i] && this.prevPickups[i] === false) {
+          audioEngine.play('pickup_ready', { pos: pads[i].pos, listener })
+        }
+      }
+    }
+    this.prevPickups = avail
   }
 
   /**
@@ -288,7 +393,6 @@ export class Game {
     if (!prevLocal || !curLocal || !prevLocal.alive) return
     if (curLocal.shield + curLocal.health >= prevLocal.shield + prevLocal.health - 0.01) return
 
-    this.shakeRig.addTrauma(DAMAGE_TRAUMA)
     audioEngine.play('damage_taken')
 
     let explosionPos: Vec3 | null = null
@@ -328,7 +432,6 @@ export class Game {
     if (!prevLocal || !curLocal || !curLocal.alive) return
     if (prevLocal.vel.y < LANDING_FALL_VEL && Math.abs(curLocal.vel.y) < LANDING_SETTLE_VEL) {
       this.landingDipT = 0
-      this.shakeRig.addTrauma(LANDING_TRAUMA)
       audioEngine.play('land')
     }
   }
@@ -437,6 +540,22 @@ export class Game {
     const effects = this.effects
     if (!ctx || !effects || !this.mapGroup) return
 
+    // The FOV slider lives in the pause panel, which is open while the game
+    // keeps rendering -- so this is polled rather than pushed, and the
+    // comparison keeps it to one projection-matrix rebuild per actual drag.
+    if (store.state.settings.fov !== this.baseFov) this.setBaseFov(store.state.settings.fov)
+
+    // Pad first: it writes into the same yaw/pitch the sample() below reads,
+    // so polling after sampling would cost a frame of look latency.
+    const scoped = this.prediction.isLocalScoped()
+    this.input.pollGamepad(dt, { scoped, onTarget: this.padOnTarget })
+    if (this.input.consumePadMenuToggle()) {
+      this.padPaused = !this.padPaused
+      // Lock swallows clicks, so the panel's own buttons would be unusable
+      // if Start were pressed by someone who had also clicked into the game.
+      if (this.padPaused && document.pointerLockElement === this.canvas) document.exitPointerLock()
+    }
+
     // sample(0, 0): InputManager.sample's (seq, dt) args are only echoed
     // into its return value, never used for its own logic -- the
     // accumulator overrides both with the fixed-TICK_DT seq/dt it assigns
@@ -451,24 +570,30 @@ export class Game {
     this.recoilPitch = decayTo(this.recoilPitch, 0, dt, RECOIL_DECAY_TAU)
     this.landingDipT = Math.min(1, this.landingDipT + dt * LANDING_RECOVER_RATE)
 
+    // Camera ROTATION is driven every render frame from the input manager's
+    // continuous look angles, never from the predicted pose: rotation has no
+    // server-authoritative component at all (the sim just echoes back the
+    // yaw/pitch the client sent), so there is nothing to wait for and
+    // stepping it at the 30Hz input tick was pure, visible stutter on a
+    // 60-144Hz display. Position still comes from the predicted pose below,
+    // interpolated between ticks (see ClientPrediction.localPose).
+    //
+    // This also IS the death cam: a dead player's predicted position is
+    // frozen (Predictor skips movement while !alive, and the server freezes
+    // the corpse), so the camera keeps looking around from where they fell
+    // with no extra branch here.
+    const look = this.input.getLookAngles()
+    ctx.camera.rotation.x = look.pitch - this.recoilPitch
+    ctx.camera.rotation.y = look.yaw + Math.PI
+
     const snap = this.latestSnapshot
     if (snap) {
       const localSnap = snap.players.find((p) => p.id === this.localId)
       const pose = this.localPose()
-      const scoped = this.prediction.isLocalScoped()
       if (pose) {
         ctx.camera.position.set(pose.pos.x, pose.pos.y + EYE_HEIGHT, pose.pos.z)
-        ctx.camera.rotation.x = pose.pitch - this.recoilPitch
-        ctx.camera.rotation.y = pose.yaw + Math.PI
-        // Screenshake is the only thing that ever writes rotation.z; reset
-        // it before applying so ShakeRig's additive offset never
-        // accumulates onto a stale value from a previous frame (position.x
-        // /y and rotation.x/y are safe because they're fully overwritten
-        // above every frame -- z is the one component nothing else sets).
-        ctx.camera.rotation.z = 0
         const landingFrac = 1 - this.landingDipT
         ctx.camera.position.y -= landingFrac * landingFrac * LANDING_DIP_DEPTH
-        this.shakeRig.update(dt, ctx.camera)
       }
 
       const remotes = this.remotePoses()
@@ -486,15 +611,20 @@ export class Game {
         const maxRange = weapon.maxRange ?? HITSCAN_MAX_RANGE
         const aimHit = raycast(
           eyePos(pose.pos),
-          viewDir(pose.yaw, pose.pitch),
+          // Live look angles, matching the camera above -- the predicted
+          // pose's yaw/pitch are the same numbers one tick late, and a
+          // reticle that lags the crosshair it's drawn on reads as a bug.
+          viewDir(look.yaw, look.pitch),
           maxRange,
           this.map.boxes,
           remotes as unknown as PlayerState[],
           this.localId ?? ''
         )
-        this.hud?.setTargetTracked(aimHit.kind === 'player')
+        this.padOnTarget = aimHit.kind === 'player'
+        this.hud?.setTargetTracked(this.padOnTarget)
         this.hud?.setScoped(scoped)
       } else {
+        this.padOnTarget = false
         this.hud?.setTargetTracked(false)
         this.hud?.setScoped(false)
       }
@@ -533,7 +663,28 @@ export class Game {
             const last = this.lastHitSparkAt.get(p.id) ?? -Infinity
             if (sparkNow - last >= HIT_SPARK_MIN_INTERVAL) {
               const intoHealth = prevHealth !== undefined && p.health < prevHealth
-              effects.spawnHitSpark(at, intoHealth)
+              // Prefer the real impact point off this frame's 'shot' events
+              // (stage 1 added shot.hit) so a headshot sparks at the helmet
+              // instead of always at the torso. Shot events don't name a
+              // victim, so the point is matched by proximity to this
+              // player's torso; anything further out belongs to someone
+              // else's shot. Falls back to the torso when no shot carried a
+              // hit at all -- projectiles, melee and out-of-range misses.
+              const HIT_MATCH_RADIUS = 1.6
+              let sparkAt = at
+              let bestSq = HIT_MATCH_RADIUS * HIT_MATCH_RADIUS
+              for (const ev of snap.events) {
+                if (ev.type !== 'shot' || !ev.hit) continue
+                const dx = ev.hit.x - at.x
+                const dy = ev.hit.y - at.y
+                const dz = ev.hit.z - at.z
+                const distSq = dx * dx + dy * dy + dz * dz
+                if (distSq < bestSq) {
+                  bestSq = distSq
+                  sparkAt = ev.hit
+                }
+              }
+              effects.spawnHitSpark(sparkAt, intoHealth)
               this.lastHitSparkAt.set(p.id, sparkNow)
             }
           }
@@ -547,29 +698,26 @@ export class Game {
           if (ev.type === 'shot' && ev.playerId === this.localId) {
             this.kickT = 0
             const severity = FIRE_KICK_SEVERITY[ev.weapon]
-            this.shakeRig.addTrauma(FIRE_TRAUMA_BASE * severity)
             this.recoilPitch = Math.min(RECOIL_MAX, this.recoilPitch + FIRE_RECOIL_BASE * severity)
-          } else if (ev.type === 'explosion') {
-            const dist = Math.hypot(
-              ev.pos.x - localSnap.pos.x,
-              ev.pos.y - localSnap.pos.y,
-              ev.pos.z - localSnap.pos.z
-            )
-            if (dist < EXPLOSION_TRAUMA_RADIUS) {
-              const falloff = 1 - dist / EXPLOSION_TRAUMA_RADIUS
-              this.shakeRig.addTrauma(EXPLOSION_TRAUMA_MAX * falloff * falloff)
-            }
-          } else if (ev.type === 'kill' && ev.killerId === this.localId && ev.killerId !== ev.victimId) {
-            this.shakeRig.addTrauma(KILL_CONFIRM_TRAUMA)
           }
         }
-        this.updateViewmodel(localSnap, dt, scoped)
+        this.updateViewmodel(localSnap, dt, scoped, look)
       }
 
       effects.setDeathFade(localSnap ? !localSnap.alive : false, dt)
+
+      this.hud?.setPhase(snap.phase ?? 'playing', snap.timeLeft)
+
+      // --- stage-3 seam: EffectsSystem.syncPickups(defs, available) draws
+      // the power-weapon pads. This is its only call site -- keep it. The
+      // cast is a shim for the window before that method exists. ---
+      ;(effects as unknown as PickupPadSync).syncPickups?.(this.map?.powerPickups ?? [], snap.pickups ?? [])
     }
 
-    this.hud?.setInputPaused(!this.input.isLocked())
+    // A pad player never clicks, so never holds pointer lock -- gating the
+    // overlay on lock alone would leave "click to resume" pinned over a
+    // perfectly playable match. Start opens the same panel deliberately.
+    this.hud?.setInputPaused(this.padPaused || (!this.input.isLocked() && !this.input.isPadActive()))
     this.hud?.update(dt, snap, this.localId, this.input.scoreboardHeld())
 
     effects.tickMapPulse(this.mapGroup, dt)
@@ -591,7 +739,7 @@ export class Game {
 
   // ---- viewmodel --------------------------------------------------------------
 
-  private updateViewmodel(local: SnapPlayer, dt: number, scoped: boolean): void {
+  private updateViewmodel(local: SnapPlayer, dt: number, scoped: boolean, look: { yaw: number; pitch: number }): void {
     if (!this.sceneCtx || !this.viewmodelRig) return
     const weaponId = local.weapons[local.activeWeapon]
     let mesh = this.viewmodels.get(weaponId)
@@ -654,8 +802,8 @@ export class Game {
     // View sway: a small, heavily-damped offset from how fast the player is
     // turning, sourced from InputManager's continuous look angles (not
     // `local.yaw/pitch`, which only update at the 20Hz snapshot rate and
-    // would make the sway visibly step).
-    const look = this.input.getLookAngles()
+    // would make the sway visibly step). Passed in from tick(), which
+    // already read it for the camera -- one read per frame, not two.
     const twoPi = Math.PI * 2
     const yawDelta = ((look.yaw - this.prevLookYaw + Math.PI) % twoPi + twoPi) % twoPi - Math.PI
     const pitchDelta = look.pitch - this.prevLookPitch
@@ -671,6 +819,16 @@ export class Game {
     const landingDip = landingFrac * landingFrac * LANDING_DIP_DEPTH * LANDING_DIP_VIEWMODEL_SCALE
 
     mesh.position.set(bobX + this.swayX, bobY + this.swayY - landingDip, kick)
+
+    // Same reload detection the HUD's RELOADING readout uses (ui/hud.ts's
+    // updateWeapons): the sim refills the magazine only when the RELOAD_TIME
+    // lockout ends, so an empty mag on the active slot IS the lockout
+    // running. Power melee never reloads and never empties. Applied after
+    // position.set above -- the dip stacks on this frame's bob/sway/kick.
+    const reloading =
+      local.ammo[local.activeWeapon] <= 0 && WEAPONS[weaponId].kind !== 'power_melee'
+    setViewmodelReload(mesh, reloading, dt)
+
     setViewmodelFlare(mesh, this.kickT)
   }
 
@@ -712,6 +870,11 @@ export class Game {
     ctx?.dispose()
     this.hud?.dispose()
     this.hud = null
+    // Stop the match bed before suspending the context, so the ambient
+    // crossfade doesn't get frozen mid-ramp and resume into a stuck drone
+    // the next time a gesture wakes the engine. main.ts starts the menu bed
+    // again on the phase change that follows.
+    audioEngine.setAmbient(null)
     audioEngine.dispose()
 
     // Match can end (or the connection can drop) while still scoped -- the
@@ -736,5 +899,8 @@ export class Game {
     this.prevHealth.clear()
     this.lastHitSparkAt.clear()
     this.latestSnapshot = null
+    this.padPaused = false
+    this.padOnTarget = false
+    this.prevPickups = []
   }
 }

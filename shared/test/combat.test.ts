@@ -10,7 +10,9 @@ import {
   FRAG_DAMAGE,
   FRAG_RADIUS,
   FRAG_FUSE,
+  FRAG_BOUNCE_DAMPING,
   MAG_FUSE,
+  GRAVITY,
   PLAYER_BODY_CENTER_Y,
   PLAYER_BODY_RADIUS,
   PLAYER_HEAD_RADIUS,
@@ -20,7 +22,7 @@ import {
   ADS_MOVE_MULT,
   MELEE_DAMAGE,
 } from '../src/constants'
-import { WEAPONS, WEAPON_POOL, STARTER_WEAPON, rollLoadout } from '../src/weapons'
+import { WEAPONS, WEAPON_POOL, rollLoadout } from '../src/weapons'
 import {
   applyDamage,
   tickShield,
@@ -28,6 +30,7 @@ import {
   stepProjectile,
   explode,
   checkSwarmPop,
+  FRAG_BOUNCE_FRICTION,
   type Projectile,
 } from '../src/combat'
 import { MatchSim } from '../src/sim'
@@ -88,17 +91,17 @@ describe('tickShield', () => {
 
 describe('rollLoadout', () => {
   it('never duplicates weapons and honors the injected rand sequence', () => {
-    // rollLoadout now consumes one rand() call for weapons (not two) --
-    // slot 0 is always STARTER_WEAPON, so only the remaining 3 values in
-    // this sequence (grenades, equipment) matter beyond the first.
-    const rand = seqRand([0, 0, 0])
+    // rollLoadout consumes two rand() calls for weapons (slot 0 from the
+    // ranged-only pool, slot 1 from the full pool minus slot 0), then
+    // grenades, then equipment -- four values total.
+    const rand = seqRand([0, 0, 0, 0])
     const loadout = rollLoadout(rand)
-    expect(loadout.weapons[0]).toBe(STARTER_WEAPON)
-    expect(loadout.weapons[1]).toBe(WEAPON_POOL[0])
+    expect(loadout.weapons[0]).toBe(WEAPON_POOL[0])
+    expect(loadout.weapons[1]).toBe(WEAPON_POOL[1])
     expect(loadout.grenades).toEqual({ frag: 2, mag: 0 })
     expect(loadout.equipment).toBe('grapple')
 
-    const rand2 = seqRand([0.95, 0.5, 0.5])
+    const rand2 = seqRand([0.95, 0.95, 0.5, 0.5])
     const loadout2 = rollLoadout(rand2)
     expect(loadout2.weapons[0]).not.toBe(loadout2.weapons[1])
     // EQUIPMENT_OPTIONS dropped its trailing null -- sandbox loadouts
@@ -106,7 +109,7 @@ describe('rollLoadout', () => {
     expect(loadout2.equipment).not.toBe(null)
   })
 
-  it('200 seeded rolls: guaranteed precision starter, no null equipment, no duplicate weapons', () => {
+  it('200 seeded rolls: slot 0 is always a gun, no null equipment, no duplicate weapons', () => {
     for (let trial = 0; trial < 200; trial++) {
       let seed = trial * 7 + 1
       const prand = (): number => {
@@ -114,7 +117,9 @@ describe('rollLoadout', () => {
         return (seed % 10000) / 10000
       }
       const lo = rollLoadout(prand)
-      expect(lo.weapons[0]).toBe(STARTER_WEAPON)
+      expect(WEAPON_POOL).toContain(lo.weapons[0])
+      // A loadout must always include a gun: slot 0 never rolls a power melee.
+      expect(WEAPONS[lo.weapons[0]].kind).not.toBe('power_melee')
       expect(lo.weapons[0]).not.toBe(lo.weapons[1])
       expect(WEAPON_POOL).toContain(lo.weapons[1])
       expect(lo.equipment).not.toBe(null)
@@ -300,6 +305,51 @@ describe('frag grenade', () => {
 
     const late = stepProjectile(frag, [], [], TICK_DT, FRAG_FUSE)
     expect(late.exploded).toBe(true)
+  })
+
+  it('bounces off the face it actually crossed, keeping its forward momentum', () => {
+    // Regression: the bounce used to negate the WHOLE velocity vector, so a
+    // frag thrown forward-and-down came off the floor flying back at the
+    // thrower. A floor bounce must only flip the vertical (normal) component.
+    const floor: AABB = { min: { x: -5, y: -1, z: -5 }, max: { x: 5, y: 0, z: 5 } }
+    const frag: Projectile = {
+      id: 1,
+      kind: 'frag',
+      pos: { x: 0, y: 0.2, z: 0 },
+      vel: { x: 0, y: -6, z: 8 }, // thrown forward (+z) and down
+      ownerId: 'thrower',
+      team: 0,
+      fuseAt: FRAG_FUSE,
+    }
+
+    stepProjectile(frag, [], [floor], TICK_DT, 0)
+
+    expect(frag.vel.y).toBeGreaterThan(0) // came off the floor
+    expect(frag.vel.z).toBeGreaterThan(0) // still travelling forward, not back
+    expect(frag.vel.z).toBeCloseTo(8 * FRAG_BOUNCE_FRICTION, 5)
+    expect(frag.vel.y).toBeCloseTo((6 + GRAVITY * TICK_DT) * FRAG_BOUNCE_DAMPING, 5)
+    // and it sits on the floor rather than sunk inside it
+    expect(frag.pos.y).toBe(floor.max.y)
+  })
+
+  it('bounces off a wall face without flipping its vertical velocity', () => {
+    const wall: AABB = { min: { x: 2, y: -5, z: -5 }, max: { x: 6, y: 5, z: 5 } }
+    const frag: Projectile = {
+      id: 2,
+      kind: 'frag',
+      pos: { x: 1.8, y: 2, z: 0 },
+      vel: { x: 12, y: 0, z: 0 }, // straight into the wall's -x face
+      ownerId: 'thrower',
+      team: 0,
+      fuseAt: FRAG_FUSE,
+    }
+
+    stepProjectile(frag, [], [wall], TICK_DT, 0)
+
+    expect(frag.vel.x).toBeCloseTo(-12 * FRAG_BOUNCE_DAMPING, 5)
+    // Gravity still pulls it down -- a wall bounce must not send it upward.
+    expect(frag.vel.y).toBeLessThan(0)
+    expect(frag.pos.x).toBe(wall.min.x)
   })
 })
 

@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { MatchSim, type SimEvent } from '../src/sim'
 import { mulberry32 } from '../src/rng'
 import { rollLoadout, WEAPONS } from '../src/weapons'
+import { toSnapPlayer } from '../src/protocol'
 import { MAPS } from '../src/maps'
+import type { WeaponId } from '../src/types'
 import {
   TICK_DT,
   RESPAWN_DELAY,
@@ -13,6 +15,11 @@ import {
   CAMO_DURATION,
   MELEE_LUNGE_SPEED,
   RELOAD_TIME,
+  SWAP_COOLDOWN,
+  WARMUP_SEC,
+  MATCH_TIME,
+  EYE_HEIGHT,
+  PLAYER_BODY_CENTER_Y,
 } from '../src/constants'
 import { makeInput } from './helpers'
 
@@ -312,6 +319,46 @@ describe('MatchSim: flag carrier cannot shoot (fix 1)', () => {
   })
 })
 
+describe('MatchSim: swapping weapons drops the outgoing gun\'s lockout', () => {
+  it('lets the incoming weapon fire on the swap cooldown alone, not the outgoing rof', () => {
+    // Regression: cooldownUntil is a single per-player field shared by both
+    // slots, so swapping used to inherit the weapon you just put away. Fire a
+    // railspike (rof 0.75 -> 1.33s lockout), swap to a sidearm, and the
+    // sidearm must be live SWAP_COOLDOWN later, deep inside that 1.33s.
+    const sim = new MatchSim('gutter', 30)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    a.weapons = ['railspike', 'sidearm']
+    a.ammo = [5, 12]
+    a.activeWeapon = 0
+    b.pos = { x: 1000, y: 0, z: 1000 } // out of range so no stray hits
+
+    sim.setInput('a', makeInput({ yaw: a.yaw, fire: true }))
+    let now = TICK_DT
+    let events = sim.tick(now)
+    expect(events.some((e) => e.type === 'shot' && e.weapon === 'railspike')).toBe(true)
+    const railspikeLockout = a.cooldownUntil
+    expect(railspikeLockout).toBeGreaterThan(now + SWAP_COOLDOWN)
+
+    sim.setInput('a', makeInput({ yaw: a.yaw, swap: true }))
+    now += TICK_DT
+    sim.tick(now)
+    expect(a.activeWeapon).toBe(1)
+
+    // Idle out the swap cooldown -- still well inside the railspike's lockout.
+    sim.setInput('a', makeInput({ yaw: a.yaw }))
+    const idle = runTicks(sim, Math.ceil(SWAP_COOLDOWN / TICK_DT) + 1, now)
+    now = idle.now
+    expect(now).toBeGreaterThan(a.swapCooldownUntil)
+    expect(now).toBeLessThan(railspikeLockout)
+
+    sim.setInput('a', makeInput({ yaw: a.yaw, fire: true }))
+    now += TICK_DT
+    events = sim.tick(now)
+    expect(events.some((e) => e.type === 'shot' && e.weapon === 'sidearm')).toBe(true)
+  })
+})
+
 describe('MatchSim: homing wiring (fix 2)', () => {
   it('a swarm dart fired ~15deg off-axis homes onto and hits an enemy in the forward cone', () => {
     const sim = new MatchSim('gutter', 20)
@@ -520,5 +567,262 @@ describe('Halo pass 2: per-life kill streak on the kill event', () => {
     sim.killPlayer(a, 1, null, 'fall', { ...a.pos }, events)
 
     expect(events[0].type === 'kill' && events[0].streak).toBe(0)
+  })
+})
+
+describe('MatchSim: warmup', () => {
+  it('holds combat inert for the countdown, then opens the match with match_go', () => {
+    const sim = new MatchSim('gutter', 40)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    sim.beginWarmup(WARMUP_SEC)
+    expect(sim.phase).toBe('warmup')
+    expect(sim.timeLeft).toBe(WARMUP_SEC)
+
+    a.weapons = ['sidearm', 'sidearm']
+    a.ammo = [12, 12]
+    a.activeWeapon = 0
+    a.grenades = { frag: 2, mag: 0 }
+    a.pos = { x: 0, y: 0, z: -15 }
+    a.yaw = 0
+    b.pos = { x: 0, y: 0, z: -13.5 } // inside A's melee cone and hitscan line
+
+    const startZ = a.pos.z
+    sim.setInput('a', makeInput({ yaw: 0, forward: 1, jump: true, fire: true, grenade: true }))
+    let now = TICK_DT
+    let events = sim.tick(now)
+
+    // Running and jumping are live during warmup...
+    expect(a.pos.z).toBeGreaterThan(startZ)
+    expect(a.vel.y).toBeGreaterThan(0)
+    // ...and nothing that deals damage is.
+    expect(events.some((e) => e.type === 'shot')).toBe(false)
+    expect(a.ammo[0]).toBe(12)
+    expect(a.grenades.frag).toBe(2)
+    expect(sim.projectiles).toHaveLength(0)
+
+    sim.setInput('a', makeInput({ yaw: 0, melee: true }))
+    now += TICK_DT
+    events = sim.tick(now)
+    expect(events.some((e) => e.type === 'melee_swing')).toBe(false)
+    expect(b.shield).toBe(MAX_SHIELD)
+
+    // Flags cannot be taken either -- no warmup land-grab on the enemy flag.
+    a.pos = { ...MAPS.gutter.flagStands[1] }
+    sim.setInput('a', makeInput({ yaw: 0 }))
+    now += TICK_DT
+    events = sim.tick(now)
+    expect(events.some((e) => e.type === 'flag_taken')).toBe(false)
+    expect(sim.flags[1].state).toBe('stand')
+    expect(a.carryingFlag).toBe(null)
+
+    // timeLeft carries the warmup remainder, so the HUD counts 3-2-1 off the
+    // one timer field it already reads.
+    expect(sim.timeLeft).toBeCloseTo(WARMUP_SEC - 3 * TICK_DT, 5)
+
+    // Run the countdown out: exactly one match_go, then the real match clock.
+    a.pos = { x: 0, y: 0, z: -15 }
+    const rest = runTicks(sim, Math.ceil(WARMUP_SEC / TICK_DT) + 2, now)
+    expect(rest.events.filter((e) => e.type === 'match_go')).toHaveLength(1)
+    expect(sim.phase).toBe('playing')
+    expect(sim.timeLeft).toBeGreaterThan(MATCH_TIME - 1)
+
+    // Combat is live from here.
+    sim.setInput('a', makeInput({ yaw: 0, fire: true }))
+    events = sim.tick(rest.now + TICK_DT)
+    expect(events.some((e) => e.type === 'shot')).toBe(true)
+  })
+
+  it('starts playing immediately when beginWarmup is never called', () => {
+    const sim = new MatchSim('gutter', 41)
+    expect(sim.phase).toBe('playing')
+    expect(sim.timeLeft).toBe(MATCH_TIME)
+    const events = sim.tick(TICK_DT)
+    expect(events.some((e) => e.type === 'match_go')).toBe(false)
+  })
+})
+
+describe('MatchSim: respawn protection', () => {
+  it('absorbs damage after a respawn, flags prot on the wire, and drops on the first shot', () => {
+    const sim = new MatchSim('gutter', 42)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    b.pos = { x: 1000, y: 0, z: 1000 } // out of range so no stray hits
+
+    // The initial spawn happens before anyone can shoot, so it needs none.
+    expect(toSnapPlayer(a, 0).prot).toBeUndefined()
+
+    sim.damage('a', 1000)
+    expect(a.alive).toBe(false)
+
+    const { now } = runTicks(sim, Math.ceil(RESPAWN_DELAY / TICK_DT) + 1, 0)
+    expect(a.alive).toBe(true)
+    expect(a.spawnProtectedUntil).toBeGreaterThan(now)
+    expect(toSnapPlayer(a, now).prot).toBe(true)
+
+    // Damage bounces off for the whole window.
+    sim.damage('a', 1000)
+    expect(a.alive).toBe(true)
+    expect(a.shield).toBe(MAX_SHIELD)
+    expect(a.health).toBe(MAX_HEALTH)
+
+    // Firing gives the protection up -- it is a head start, not a bunker.
+    a.weapons = ['sidearm', 'sidearm']
+    a.ammo = [12, 12]
+    a.activeWeapon = 0
+    a.cooldownUntil = 0
+    sim.setInput('a', makeInput({ yaw: a.yaw, fire: true }))
+    const shotNow = now + TICK_DT
+    const events = sim.tick(shotNow)
+    expect(events.some((e) => e.type === 'shot' && e.playerId === 'a')).toBe(true)
+    expect(a.spawnProtectedUntil).toBe(0)
+    expect(toSnapPlayer(a, shotNow).prot).toBeUndefined()
+
+    sim.damage('a', 10)
+    expect(a.shield).toBeLessThan(MAX_SHIELD)
+  })
+})
+
+describe('MatchSim: power weapon pads', () => {
+  const pad = { pos: { x: 0, y: 0, z: -15 }, weapon: 'boomtube' as WeaponId, respawnSec: 30 }
+
+  /** A sim whose map carries one pad. Copies the map rather than mutating the
+   * shared MAPS entry every other test reads. */
+  function simWithPad(seed: number) {
+    const sim = new MatchSim('gutter', seed)
+    sim.map = { ...sim.map, powerPickups: [pad] }
+    return sim
+  }
+
+  it('replaces the active slot on touch, refills it, and takes the pad down', () => {
+    const sim = simWithPad(43)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    a.weapons = ['sidearm', 'pulse_smg']
+    a.ammo = [3, 30]
+    a.activeWeapon = 0
+    a.cooldownUntil = 99 // a live rate-of-fire lockout the pad must clear
+    a.pos = { x: 0, y: 0, z: -20 } // 5m off the pad
+
+    sim.setInput('a', makeInput({ yaw: a.yaw }))
+    let now = TICK_DT
+    sim.tick(now)
+    expect(sim.pickupsUp()).toEqual([true])
+    expect(a.weapons[0]).toBe('sidearm')
+
+    a.pos = { x: pad.pos.x + 1, y: pad.pos.y, z: pad.pos.z } // 1m < PICKUP_RADIUS
+    now += TICK_DT
+    let events = sim.tick(now)
+    expect(
+      events.some((e) => e.type === 'pickup' && e.playerId === 'a' && e.weapon === 'boomtube')
+    ).toBe(true)
+    expect(a.weapons).toEqual(['boomtube', 'pulse_smg'])
+    expect(a.ammo[0]).toBe(WEAPONS.boomtube.magSize)
+    expect(a.cooldownUntil).toBe(0)
+    expect(sim.pickupsUp()).toEqual([false])
+
+    // Standing on a downed pad gives nothing until it respawns.
+    now += TICK_DT
+    events = sim.tick(now)
+    expect(events.some((e) => e.type === 'pickup')).toBe(false)
+  })
+
+  it('walks past a pad holding a weapon it already carries in either slot', () => {
+    const sim = simWithPad(44)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    a.weapons = ['sidearm', 'boomtube']
+    a.ammo = [3, 1]
+    a.activeWeapon = 0
+    a.pos = { ...pad.pos }
+
+    sim.setInput('a', makeInput({ yaw: a.yaw }))
+    const events = sim.tick(TICK_DT)
+    expect(events.some((e) => e.type === 'pickup')).toBe(false)
+    expect(a.weapons).toEqual(['sidearm', 'boomtube'])
+    expect(sim.pickupsUp()).toEqual([true]) // pad never consumed
+  })
+
+  it('is inert during warmup', () => {
+    const sim = simWithPad(45)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    sim.beginWarmup(WARMUP_SEC)
+    a.weapons = ['sidearm', 'pulse_smg']
+    a.pos = { ...pad.pos }
+
+    sim.setInput('a', makeInput({ yaw: a.yaw }))
+    const events = sim.tick(TICK_DT)
+    expect(events.some((e) => e.type === 'pickup')).toBe(false)
+    expect(sim.pickupsUp()).toEqual([true])
+  })
+})
+
+describe('MatchSim: melee swings are never silent', () => {
+  it('emits melee_swing for a bash and for a power melee, but not for a cooled-down press', () => {
+    const sim = new MatchSim('gutter', 46)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    a.pos = { x: 0, y: 0, z: -15 }
+    a.yaw = 0
+    b.pos = { x: 1000, y: 0, z: 1000 } // nothing in range: a whiff is still heard
+
+    sim.setInput('a', makeInput({ yaw: 0, melee: true }))
+    let now = TICK_DT
+    let events = sim.tick(now)
+    expect(events.filter((e) => e.type === 'melee_swing')).toEqual([
+      { type: 'melee_swing', playerId: 'a', weapon: null },
+    ])
+
+    // Held through the melee cooldown, the blocked press emits nothing.
+    now += TICK_DT
+    events = sim.tick(now)
+    expect(events.some((e) => e.type === 'melee_swing')).toBe(false)
+
+    // Power melee emits BOTH the swing (carrying the weapon id, which is how
+    // the client knows to suppress the tracer) and the usual shot event.
+    a.weapons = ['arc_blade', 'sidearm']
+    a.ammo = [1, 12]
+    a.activeWeapon = 0
+    a.cooldownUntil = 0
+    sim.setInput('a', makeInput({ yaw: 0, fire: true }))
+    now += TICK_DT
+    events = sim.tick(now)
+    expect(events.some((e) => e.type === 'melee_swing' && e.weapon === 'arc_blade')).toBe(true)
+    expect(events.some((e) => e.type === 'shot' && e.weapon === 'arc_blade')).toBe(true)
+  })
+})
+
+describe('MatchSim: shot events carry the impact point', () => {
+  it('sets hit to the first ray impact when it connects and omits it on a clean miss', () => {
+    const sim = new MatchSim('gutter', 47)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    // Strip the geometry so the only thing the ray can reach is B.
+    sim.map = { ...sim.map, boxes: [] }
+    a.weapons = ['railspike', 'railspike'] // one pellet, spread 0.004
+    a.ammo = [5, 5]
+    a.activeWeapon = 0
+    a.pos = { x: 0, y: 0, z: -15 }
+    a.yaw = 0
+    a.pitch = 0
+    // B's body sphere sits on A's boresight 6m ahead (eye height cancels).
+    b.pos = { x: 0, y: EYE_HEIGHT - PLAYER_BODY_CENTER_Y, z: -9 }
+
+    sim.setInput('a', makeInput({ yaw: 0, fire: true }))
+    let events = sim.tick(TICK_DT)
+    const shot = events.find((e): e is Extract<SimEvent, { type: 'shot' }> => e.type === 'shot')
+    expect(shot).toBeDefined()
+    expect(shot!.hit).toBeDefined()
+    // Impact on the near face of B's body sphere, not at B's center.
+    expect(shot!.hit!.z).toBeGreaterThan(-10)
+    expect(shot!.hit!.z).toBeLessThan(-9)
+    expect(Math.abs(shot!.hit!.x)).toBeLessThan(0.2)
+
+    // A ray that reaches nothing leaves hit off entirely.
+    b.pos = { x: 1000, y: 0, z: 1000 }
+    a.cooldownUntil = 0
+    sim.setInput('a', makeInput({ yaw: 0, fire: true }))
+    events = sim.tick(2 * TICK_DT)
+    const miss = events.find((e): e is Extract<SimEvent, { type: 'shot' }> => e.type === 'shot')
+    expect(miss).toBeDefined()
+    expect(miss!.hit).toBeUndefined()
   })
 })

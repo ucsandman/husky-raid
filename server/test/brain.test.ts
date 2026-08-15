@@ -269,3 +269,59 @@ describe('BotBrain: full 8-bot match', () => {
     expect(now).toBeLessThan(maxTime)
   })
 })
+
+describe('BotBrain: full 8-bot match on bastion', () => {
+  it('produces at least one capture on the big three-route map, no exceptions', () => {
+    // Same shape as the gutter match above -- same seed style, same
+    // per-tick wiring, full MATCH_TIME budget. This is the map-side
+    // acceptance test for bastion: it is ~3x gutter's area, has three
+    // separate routes and six doorway crossings, and bots are point-seeking
+    // walkers with no obstacle avoidance, so any waypoint edge that clips a
+    // wall or a cover box strands a runner and no capture ever happens.
+    const sim = new MatchSim('bastion', 77)
+    const brains = new Map<string, BotBrain>()
+    for (let i = 0; i < 8; i++) {
+      const id = `bot-${i}`
+      const team = i < 4 ? 0 : 1
+      sim.addPlayer(id, `Bot${i}`, team, true)
+      brains.set(id, new BotBrain(id, DEFAULT_DIFFICULTY, 77000 + i + 1))
+    }
+
+    let roles = new Map<string, Role>()
+    let lastRoleAssignAt = -Infinity
+    let now = 0
+    let captured = false
+    const maxTime = MATCH_TIME
+
+    const recomputeRoles = () => {
+      const bots = [...sim.players.values()]
+      const team0 = bots.filter((p) => p.team === 0)
+      const team1 = bots.filter((p) => p.team === 1)
+      roles = new Map([...assignRoles(team0, sim), ...assignRoles(team1, sim)])
+    }
+
+    // Loop on "not ended" rather than "=== 'playing'": MatchSim.phase also
+    // has a 'warmup' value, so a phase that starts in warmup must not end
+    // this loop before a single tick runs.
+    while (now < maxTime && sim.phase !== 'ended') {
+      now += TICK_DT
+      if (now - lastRoleAssignAt >= 2) {
+        recomputeRoles()
+        lastRoleAssignAt = now
+      }
+      for (const [id, brain] of brains) {
+        const role = roles.get(id) ?? 'defender'
+        const input = brain.think(sim, sim.map, role, now)
+        sim.setInput(id, input)
+      }
+      const events = sim.tick(now)
+      if (events.some((e) => e.type === 'capture')) captured = true
+      if (events.some((e) => e.type === 'flag_taken' || e.type === 'flag_dropped' || e.type === 'flag_returned')) {
+        recomputeRoles()
+        lastRoleAssignAt = now
+      }
+    }
+
+    expect(captured).toBe(true)
+  })
+})

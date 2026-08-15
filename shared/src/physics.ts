@@ -1,6 +1,6 @@
 import type { Vec3, AABB, PlayerState, PlayerInput } from './types'
 import type { GameMap } from './map'
-import { add, sub, scale, dot, normalize, length, distSq } from './math'
+import { add, sub, scale, dot, normalize, length, distSq, clamp } from './math'
 import {
   MOVE_SPEED,
   ACCEL_GROUND,
@@ -211,12 +211,23 @@ export function stepMovement(
   // correct p.scoped without any wiring changes on its end.
   p.scoped = input.ads === true
 
+  // Analog move axes, clamped defensively: these arrive over the wire from
+  // an untrusted client, and an unclamped 50 on either axis is a speed hack
+  // that costs one line to close.
+  const moveF = clamp(input.forward, -1, 1)
+  const moveS = clamp(input.strafe, -1, 1)
+
   const forwardVec: Vec3 = { x: Math.sin(p.yaw), y: 0, z: Math.cos(p.yaw) }
   // right = forward x up (right-handed world, up = +y): (sinψ,0,cosψ) x (0,1,0)
   // = (0*0 - cosψ*1, cosψ*0 - sinψ*0, sinψ*1 - 0*0) = (-cosψ, 0, sinψ).
   const rightVec: Vec3 = { x: -Math.cos(p.yaw), y: 0, z: Math.sin(p.yaw) }
-  const wish = add(scale(forwardVec, input.forward), scale(rightVec, input.strafe))
+  const wish = add(scale(forwardVec, moveF), scale(rightVec, moveS))
   const wishDir = normalize(wish)
+  // Analog throttle: a half-pushed stick walks at half speed. Capped at 1 so
+  // a keyboard diagonal (magnitude sqrt2) is bit-identical to before, and a
+  // dead stick gives 0 with no division anywhere -- wishDir is already
+  // normalize()'d, which returns the zero vector rather than dividing by 0.
+  const throttle = Math.min(1, Math.hypot(moveF, moveS))
   // Scoped players move at ADS_MOVE_MULT, same multiplicative slot as the
   // existing flag-carrier penalty.
   const speedMult = (p.carryingFlag !== null ? FLAG_CARRIER_SPEED_MULT : 1) * (p.scoped ? ADS_MOVE_MULT : 1)
@@ -245,9 +256,9 @@ export function stepMovement(
     p.grounded &&
     !p.sliding &&
     !p.scoped &&
-    input.forward > SPRINT_MIN_FORWARD &&
+    moveF > SPRINT_MIN_FORWARD &&
     !input.fire
-  const wishSpeed = MOVE_SPEED * speedMult * (p.sprinting ? SPRINT_SPEED_MULT : 1)
+  const wishSpeed = MOVE_SPEED * speedMult * (p.sprinting ? SPRINT_SPEED_MULT : 1) * throttle
 
   if (p.sliding) {
     // Skip accelerate()/applyFriction() while sliding -- decay horizontal

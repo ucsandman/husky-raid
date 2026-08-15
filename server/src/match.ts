@@ -5,6 +5,7 @@ import {
   TICK_DT,
   TICK_RATE,
   SNAPSHOT_RATE,
+  WARMUP_SEC,
   type PlayerInput,
   type PlayerState,
   type ServerMsg,
@@ -14,7 +15,7 @@ import {
   type MedalId,
   type Team,
 } from '@riftlane/shared'
-import { BotBrain, DEFAULT_DIFFICULTY } from './bots/brain'
+import { BotBrain, DEFAULT_DIFFICULTY, type Difficulty } from './bots/brain'
 import { assignRoles, type Role } from './bots/roles'
 
 const BOT_NAMES = ['VEX', 'TALON', 'RIVET', 'ONYX', 'JINX', 'MOSS', 'HALCYON-9', 'DITTO']
@@ -62,6 +63,7 @@ export class HostedMatch {
   private readonly humanIds = new Set<string>()
   private readonly ackSeqByPlayer = new Map<string, number>()
   private readonly seed: number
+  private readonly botDifficulty: Difficulty
   private botCount = 0
 
   private readonly brains = new Map<string, BotBrain>()
@@ -94,12 +96,14 @@ export class HostedMatch {
     mapName: string,
     seed: number,
     onSend: (playerId: string, msg: ServerMsg) => void,
-    nowFn: () => number = () => performance.now() / 1000
+    nowFn: () => number = () => performance.now() / 1000,
+    botDifficulty: Difficulty = DEFAULT_DIFFICULTY
   ) {
     this.sim = new MatchSim(mapName, seed)
     this.onSend = onSend
     this.nowFn = nowFn
     this.seed = seed
+    this.botDifficulty = botDifficulty
   }
 
   /** Roles only drive bot AI, so each team's role scoring only ever sees
@@ -141,7 +145,7 @@ export class HostedMatch {
     this.botCount++
     const team = this.pickTeam()
     const player = this.sim.addPlayer(id, name, team, true)
-    this.brains.set(id, new BotBrain(id, DEFAULT_DIFFICULTY, brainSeed))
+    this.brains.set(id, new BotBrain(id, this.botDifficulty, brainSeed))
     return player
   }
 
@@ -292,6 +296,7 @@ export class HostedMatch {
     }))
     const events = this.pendingEvents
     this.pendingEvents = []
+    const pickups = this.sim.map.powerPickups ? this.sim.pickupsUp() : undefined
 
     for (const id of this.humanIds) {
       const msg: ServerMsg = {
@@ -305,6 +310,8 @@ export class HostedMatch {
         scores: this.sim.scores,
         timeLeft: this.sim.timeLeft,
         events,
+        phase: this.sim.phase,
+        pickups,
       }
       this.onSend(id, msg)
     }

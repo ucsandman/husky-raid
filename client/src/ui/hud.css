@@ -192,48 +192,25 @@
   border: 1px solid var(--border);
 }
 
-.hud-scope-reticle {
+/* ADS precision dot: small enough to leave a head visible under it at range,
+   so a scoped player can place headshots instead of aiming with a big cross. */
+.hud-scope-dot {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 0;
-  height: 0;
-}
-
-.hud-scope-reticle-line {
-  position: absolute;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
   background: var(--text);
   box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+  transition: background-color 0.05s ease;
 }
 
-.hud-scope-reticle-line--n,
-.hud-scope-reticle-line--s {
-  width: 1px;
-  height: 36px;
-  left: 0;
-}
-
-.hud-scope-reticle-line--w,
-.hud-scope-reticle-line--e {
-  width: 36px;
-  height: 1px;
-  top: 0;
-}
-
-.hud-scope-reticle-line--n {
-  top: -54px;
-}
-
-.hud-scope-reticle-line--s {
-  top: 18px;
-}
-
-.hud-scope-reticle-line--w {
-  left: -54px;
-}
-
-.hud-scope-reticle-line--e {
-  left: 18px;
+/* Same target-tracking red as the hip crosshair (Hud.setTargetTracked). */
+.hud-scope--target .hud-scope-dot {
+  background: var(--danger);
+  box-shadow: 0 0 4px var(--danger);
 }
 
 /* ---- damage feedback (full-screen vignette + directional source) ------ */
@@ -734,7 +711,6 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.4rem;
   background: rgba(10, 13, 20, 0.6);
   text-align: center;
 }
@@ -744,7 +720,7 @@
 }
 
 .hud-input-paused-title {
-  font-size: 1.4rem;
+  font-size: 1.2rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--text);
@@ -753,7 +729,8 @@
 }
 
 .hud-input-paused-hint {
-  font-size: 0.8rem;
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
   color: var(--text-dim);
 }
 
@@ -770,6 +747,43 @@
   .hud-input-paused-title {
     animation: none;
   }
+}
+
+/* ---- pause panel --------------------------------------------------------
+   The actual clickable card inside .hud-input-paused (see Hud.setInputPaused
+   / setResumeHandler / setLeaveHandler). This is the one child of the HUD
+   allowed to opt back in to pointer-events:auto -- the backdrop around it
+   stays none so a click outside the card still reaches the canvas and
+   re-acquires pointer lock, same as the old click-anywhere overlay. */
+
+.hud-pause-panel {
+  pointer-events: auto;
+  width: min(360px, 90vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.75rem 1.5rem;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.hud-pause-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  text-align: left;
+}
+
+.hud-pause-sliders .field {
+  margin-bottom: 0;
+}
+
+.hud-pause-btn {
+  width: 100%;
 }
 
 /* ---- scoreboard (Tab held) ----------------------------------------------- */
@@ -979,6 +993,142 @@
   letter-spacing: 0.1em;
   color: var(--text-dim);
   text-align: center;
+}
+
+/* ---- phase banner (warmup countdown / FIGHT flash) ---------------------
+   Driven by Hud.setPhase(). Sits at 15%: above the kill banner's 22% band,
+   the callout's 33% band, AND the centered pause panel -- at match start a
+   player has not clicked into pointer lock yet, so the pause panel and the
+   warmup countdown are on screen at the same time and must not overlap
+   (seen live: the countdown digit printed across the Resume button). */
+.hud-phase-banner {
+  position: absolute;
+  top: 15%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--mono);
+  font-weight: 700;
+  text-align: center;
+  color: var(--text);
+  text-shadow: 0 0 14px rgba(0, 0, 0, 0.85);
+  opacity: 0;
+}
+
+.hud-phase-banner--countdown {
+  font-size: 4rem;
+}
+
+.hud-phase-banner--pulse {
+  animation: hud-phase-pulse 0.9s ease-out forwards;
+}
+
+@keyframes hud-phase-pulse {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.6);
+  }
+  25% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.92);
+  }
+}
+
+.hud-phase-banner--fight {
+  font-size: 5rem;
+  color: var(--danger);
+  text-shadow: 0 0 20px rgba(255, 77, 94, 0.85);
+  animation: hud-phase-fight 0.8s ease-out forwards;
+}
+
+@keyframes hud-phase-fight {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.6);
+  }
+  20% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.15);
+  }
+  35% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-phase-banner--pulse {
+    animation-name: hud-phase-pulse-plain;
+  }
+
+  .hud-phase-banner--fight {
+    animation-name: hud-phase-fight-plain;
+  }
+
+  @keyframes hud-phase-pulse-plain {
+    0%, 100% {
+      opacity: 0;
+    }
+    25%, 80% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes hud-phase-fight-plain {
+    0%, 100% {
+      opacity: 0;
+    }
+    20%, 75% {
+      opacity: 1;
+    }
+  }
+}
+
+/* ---- pickup toast (center-top) ------------------------------------------
+   Driven by Hud.notifyPickup(). Sits below the score strip/flag banner
+   cluster so it never overlaps them. */
+.hud-pickup-toast {
+  position: absolute;
+  top: 6rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.3rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+  color: var(--text);
+  background: rgba(10, 13, 20, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  opacity: 0;
+}
+
+.hud-pickup-toast--own {
+  color: var(--ok);
+  border-color: rgba(53, 208, 127, 0.45);
+}
+
+.hud-pickup-toast--show {
+  animation: hud-callout-fade 2.4s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-pickup-toast--show {
+    animation-name: hud-callout-fade-plain;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

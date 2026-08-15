@@ -1,4 +1,3 @@
-import * as THREE from 'three'
 import type { Vec3 } from '@riftlane/shared'
 
 /**
@@ -39,49 +38,4 @@ export function bearing(origin: Vec3, originYaw: number, source: Vec3): number {
 export function decayTo(value: number, target: number, dt: number, tau: number): number {
   const k = 1 - Math.exp(-dt / tau)
   return value + (target - value) * k
-}
-
-const TRAUMA_MAX = 1
-const TRAUMA_DECAY = 1.7 // trauma units/sec
-// RIFTLANE's camera sits at head height in a tight arena -- the reference
-// doc's 0.55/0.1 read as a wild swing here, scaled down to stay readable.
-const MAX_OFFSET = 0.14 // world units at full shake
-const MAX_ROLL = 0.05 // radians at full shake
-
-/** Deterministic value noise in [-1, 1], seeded per-axis so axes don't
- * lock-step. Driven by accumulated game time (passed in via update's dt),
- * never wall clock -- keeps shake reproducible under the seed()/reduced-
- * motion test hooks. */
-function pseudoNoise(t: number, seed: number): number {
-  const x = Math.sin(t * 12.9898 + seed * 78.233) * 43758.5453
-  return (x - Math.floor(x)) * 2 - 1
-}
-
-/**
- * Trauma-based screenshake (see game-feel.md). Shake magnitude is
- * trauma^2 so small events barely move the camera and big ones snap hard;
- * trauma decays linearly per second and is hard-capped. Caller applies
- * `update()` every frame AFTER the camera's base pose (prediction position
- * + rotation.x/y) has been written, and must zero rotation.z beforehand --
- * this class only ever ADDS an offset, it never re-derives or resets the
- * base transform, so nothing here can leak into the real player transform.
- */
-export class ShakeRig {
-  private trauma = 0
-  private time = 0
-
-  addTrauma(amount: number): void {
-    this.trauma = Math.min(TRAUMA_MAX, this.trauma + amount)
-  }
-
-  update(dt: number, camera: THREE.PerspectiveCamera): void {
-    this.time += dt
-    this.trauma = Math.max(0, this.trauma - TRAUMA_DECAY * dt)
-    if (this.trauma <= 0) return
-    const shake = this.trauma * this.trauma
-    const freq = this.time * 32
-    camera.position.x += MAX_OFFSET * shake * pseudoNoise(freq, 1)
-    camera.position.y += MAX_OFFSET * shake * pseudoNoise(freq, 2)
-    camera.rotation.z += MAX_ROLL * shake * pseudoNoise(freq, 3)
-  }
 }

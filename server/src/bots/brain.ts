@@ -8,8 +8,16 @@ export interface Difficulty {
   aimErrorDeg: number
 }
 
+/** Difficulty presets selectable per-match via botDifficulty. 'normal' is
+ * today's original single fixed difficulty, unchanged. */
+export const DIFFICULTIES: Record<'easy' | 'normal' | 'hard', Difficulty> = {
+  easy: { reactionMs: 550, aimErrorDeg: 8 },
+  normal: { reactionMs: 350, aimErrorDeg: 4 },
+  hard: { reactionMs: 220, aimErrorDeg: 1.8 },
+}
+
 /** v1: one fixed difficulty for every bot. */
-export const DEFAULT_DIFFICULTY: Difficulty = { reactionMs: 350, aimErrorDeg: 4 }
+export const DEFAULT_DIFFICULTY: Difficulty = DIFFICULTIES.normal
 
 /** All bot tuning knobs live here -- never inline a magic number in the
  * logic below. Distances are meters, times are seconds unless noted. */
@@ -200,6 +208,13 @@ export class BotBrain {
   private lastGoalPos: Vec3 | null = null
   private patrolGoal: Vec3 | null = null
   private patrolSetAt = -Infinity
+  /** Set for exactly one think() call whenever computeGoal re-rolls the
+   * defender's periodic patrol jitter point, so that specific goal reaches
+   * Navigator.setGoal even when it lands inside GOAL_REFRESH_DIST of the
+   * last one pushed -- otherwise the gate swallows most re-rolls (patrol
+   * radius <= GOAL_REFRESH_DIST) and the bot vibrates in place, exactly what
+   * DEFENDER_PATROL_RESET_INTERVAL's periodic re-roll exists to prevent. */
+  private forcePatrolGoalPush = false
 
   constructor(id: string, difficulty: Difficulty, seed: number) {
     this.id = id
@@ -229,7 +244,12 @@ export class BotBrain {
     const canFire = visible !== null && (now - this.targetSince) * 1000 >= this.difficulty.reactionMs
 
     const goal = this.computeGoal(p, role, sim, map, ourTeam, enemyTeam, now)
-    if (goal && (!this.lastGoalPos || distSq(goal, this.lastGoalPos) > BRAIN.GOAL_REFRESH_DIST * BRAIN.GOAL_REFRESH_DIST)) {
+    const forceGoalPush = this.forcePatrolGoalPush
+    this.forcePatrolGoalPush = false
+    if (
+      goal &&
+      (forceGoalPush || !this.lastGoalPos || distSq(goal, this.lastGoalPos) > BRAIN.GOAL_REFRESH_DIST * BRAIN.GOAL_REFRESH_DIST)
+    ) {
       this.navigator.setGoal(goal)
       this.lastGoalPos = { ...goal }
     }
@@ -371,6 +391,10 @@ export class BotBrain {
           const r = this.rand() * BRAIN.DEFENDER_PATROL_RADIUS
           this.patrolGoal = { x: stand.x + Math.cos(angle) * r, y: stand.y, z: stand.z + Math.sin(angle) * r }
           this.patrolSetAt = now
+          // Bypass GOAL_REFRESH_DIST for this specific re-roll (see
+          // forcePatrolGoalPush's comment) -- other goal updates still gate
+          // normally.
+          this.forcePatrolGoalPush = true
         }
         return this.patrolGoal
       }

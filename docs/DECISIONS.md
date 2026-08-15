@@ -109,9 +109,24 @@ From the design-tournament synthesis (5 designers / 3 judges), locked by regress
 - **FOV is 90 vertical, on purpose.** three.js `PerspectiveCamera.fov` is VERTICAL; the earlier 105 was ~133 horizontal at 16:9, shrinking every target. 90 vertical is ~121 horizontal, top of Halo Infinite's band. Rejected: 100-120 "because Halo's slider says so" -- those are horizontal numbers.
 - **`PLAYER_GRAVITY` (24) is separate from `GRAVITY` (20).** Movement got a snappier arc; grenade/projectile arcs kept the old constant. Launch-pad velocities were rescaled by k = sqrt(24/20) so every pad trajectory lands where it did before (velocity x k, gravity x k^2 preserves the path). Change one, retune the other.
 - **Hit spheres 0.58/0.3 are aim forgiveness, not collision.** The movement AABB stays PLAYER_RADIUS 0.4; only shot contact tests use the wider spheres. Rejected: cursor-side bullet magnetism -- server-side generous volumes are prediction-safe and identical for everyone.
-- **Everyone spawns with the Triad Rifle; only the second slot is random.** Pure random loadouts could roll two melee weapons (no gun at all). Rejected: removing power weapons from the pool -- without map pickups shipped, that deletes them from the game.
+- **Everyone spawns with the Triad Rifle; only the second slot is random.** Pure random loadouts could roll two melee weapons (no gun at all). Rejected: removing power weapons from the pool -- without map pickups shipped, that deletes them from the game. SUPERSEDED 2026-08-14: player asked for fully random spawn guns. Slot 0 now rolls from the ranged-only pool (`RANGED_POOL` in `shared/src/weapons.ts`), slot 1 from everything else -- keeps the "always at least one gun" invariant this rule existed for, without the fixed starter. Same date, later pass: all trauma screenshake removed (`ShakeRig` deleted; recoil pitch kick and landing dip kept), and the ADS reticle is a 4px precision dot instead of the 36px cross so scoped headshots have a clear aim point.
 - **`sprint`/`slideRequest` are OPTIONAL `PlayerInput` fields.** Bots and old tests omit them and behave bit-identically (pinned by test). Required fields would have broken 6 files mechanically for two booleans.
 - **Clamber is airborne-only with a 0.6m minimum ledge** so the 0.5m guard-rail curbs (the "too easy to fall off" fix) can never be auto-mantled -- the two features are load-bearing against each other.
+
+## 2026-08-14: MVP-to-real-game pass -- decisions that shape future work
+
+Shipped from an adversarially-verified audit (25 confirmed findings) plus three requested features. The load-bearing choices:
+
+- **Camera rotation is client-authoritative per render frame** (`game.ts` reads `input.getLookAngles()` every rAF); camera POSITION interpolates between the previous and current predicted 30Hz tick by the accumulator fraction. This costs one fixed tick (~33ms) of position latency and is what killed the 30Hz camera stepping. Do not move rotation back behind the tick accumulator.
+- **Corrections over 2.5m snap instead of easing** (`CORRECTION_SNAP_DIST`, client/src/predict.ts) -- a big misprediction glides forever if eased proportionally.
+- **Gamepad is polled, not evented, and pad-active is a mode**: any pad activity claims input, any real (non-zero-delta) mouse move hands it back -- checked BEFORE the pointer-lock gate in onMouseMove, because a pad player never holds lock. While pad-active, missing pointer lock does not show the pause panel.
+- **Analog movement scales wishSpeed by min(1, |stick|)** in stepMovement; keyboard diagonals (magnitude sqrt2) clamp to 1, bit-identical to before. Inputs are clamped [-1,1] server-side as a trust boundary.
+- **Warmup is a sim phase, not a lobby timer** (`beginWarmup(WARMUP_SEC)`): movement live, fire/grenades/flags inert, timeLeft carries the countdown, `match_go` event flips it. A sim that never calls beginWarmup behaves exactly as before (all older tests unchanged).
+- **Power pickups replace the ACTIVE slot** on walk-over (skip if already carried in either slot), respawn on a per-pad timer, and are snapshot as a boolean array aligned with `map.powerPickups`. Bots ignore pads for now.
+- **Swap now clears the outgoing weapon's fire/reload cooldown** (only swapCooldownUntil gates the incoming gun) -- Halo-style swap-cancel is intentional, including reload-canceling.
+- **Spawn protection (2s) is enforced in applyDamage as a single choke point** and broken by the protected player's own fire; carried on the wire as `prot` so the soldier shimmers.
+- **bastion map rules**: rotate180-symmetric everything (geometry, pads, waypoints, edges); walk edges need >=1.5m of straight-line clearance because bots have no avoidance; clamber-mountable ledges stay <=1.2m. The bastion bot-capture test in server/test/brain.test.ts is the canary -- if a map edit breaks it, fix the map, not the bots.
+- **Warmup countdown banner renders at top 15%**, above the centered pause panel -- at match start both are on screen at once (no pointer lock yet), and at 40% the digit printed across the Resume button.
 
 ## 2026-08-14: Controls-fix pass -- three invariants that must not be "simplified" back
 

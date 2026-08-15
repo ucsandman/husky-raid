@@ -43,6 +43,16 @@ export const hairpin: GameMap = {
     { min: { x: 12, y: 0, z: -31 }, max: { x: 13, y: 6, z: 40 } }, // 12 east perimeter wall
     { min: { x: -13, y: 0, z: -31 }, max: { x: 13, y: 6, z: -30 } }, // 13 south perimeter wall
     { min: { x: -13, y: 0, z: 39 }, max: { x: 13, y: 6, z: 40 } }, // 14 north perimeter wall
+    // Center-fill cover pair, added so the shortcut straight across the U's
+    // middle (box 3, solid floor since the pit fix) has something to fight
+    // over instead of being a bare 16m-wide crossing. Mirrored left/right
+    // (x -> -x, z fixed) to match this map's cover symmetry -- see boxes
+    // 7-10 and the symmetry assertion in shared/test/map.test.ts.
+    // Clearance checked against EVERY walk edge: 0-1, 1-2, 2-3, 3-4 and 4-5
+    // run along x = -10 and 9-10, 10-11, 11-12, 12-13 along x = 10, both 5m
+    // clear; 5-6, 6-7, 7-9 and 9-14 all sit at z >= 25, over 24m clear.
+    { min: { x: -5, y: 0, z: -0.75 }, max: { x: -3, y: 1, z: 0.75 } }, // 15 cover, center fill (left)
+    { min: { x: 3, y: 0, z: -0.75 }, max: { x: 5, y: 1, z: 0.75 } }, // 16 cover, center fill (right)
   ],
   boxColors: [
     0x777777, // left leg floor
@@ -60,6 +70,8 @@ export const hairpin: GameMap = {
     0x777777,
     0x777777,
     0x777777,
+    0x3355bb, // center-fill cover (cobalt/left side)
+    0xbb6633, // center-fill cover (ember/right side)
   ],
   // Velocity scaled by k = sqrt(PLAYER_GRAVITY / GRAVITY) = sqrt(24/20)
   // ~= 1.0954 from its original (0,12,8), same rationale as gutter's pads.
@@ -67,6 +79,16 @@ export const hairpin: GameMap = {
   // walkway span and nowhere near the z=39 perimeter wall.
   launchPads: [{ pos: { x: 0, y: 0, z: 26 }, radius: 1, velocity: { x: 0, y: 13.145, z: 8.763 } }],
   teleporters: [{ a: { x: -10, y: 0, z: -10 }, b: { x: 10, y: 0, z: -10 }, radius: 1 }],
+  // One railspike pad on the U's centerline (x = 0, this map's mirror axis,
+  // so it is self-symmetric and exactly equidistant from both bases), at the
+  // mouth of the joint rather than at the joint's geometric midpoint (z ~
+  // 34.5). The high walkway (box 6) roofs the ENTIRE joint floor, x -12..12
+  // / z 30..39, and PICKUP_RADIUS is an XZ radius -- a pad anywhere under it
+  // would be collectable straight through the floor by whoever is standing
+  // on the walkway above. z = 28 sits 2m clear of the walkway footprint and
+  // 2m off the launch pad at (0,0,26), so it guards the route up without
+  // being free to anyone who takes it.
+  powerPickups: [{ pos: { x: 0, y: 0, z: 28 }, weapon: 'railspike', respawnSec: 45 }],
   spawns: [
     [
       { x: -11, y: 0.5, z: -24 },

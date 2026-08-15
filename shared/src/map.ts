@@ -1,4 +1,4 @@
-import type { Vec3, AABB } from './types'
+import type { Vec3, AABB, WeaponId } from './types'
 
 export interface GameMap {
   name: string
@@ -6,6 +6,10 @@ export interface GameMap {
   boxColors: number[]
   launchPads: { pos: Vec3; radius: number; velocity: Vec3 }[]
   teleporters: { a: Vec3; b: Vec3; radius: number }[]
+  /** Map-placed power weapon spawns. A pad at `pos` offers `weapon`; once
+   * taken it respawns `respawnSec` later. Optional: maps without pads omit
+   * it and the sim treats it as []. */
+  powerPickups?: { pos: Vec3; weapon: WeaponId; respawnSec: number }[]
   spawns: [Vec3[], Vec3[]]
   spawnYaw: [number, number]
   flagStands: [Vec3, Vec3]

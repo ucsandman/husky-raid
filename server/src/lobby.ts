@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { HostedMatch } from './match'
-import { TEAM_SIZE } from '@riftlane/shared'
+import { DIFFICULTIES, DEFAULT_DIFFICULTY, type Difficulty } from './bots/brain'
+import { TEAM_SIZE, WARMUP_SEC } from '@riftlane/shared'
 import type { ClientMsg, PlayerInput, ServerMsg, Team } from '@riftlane/shared'
 
 export type SendFn = (msg: ServerMsg) => void
@@ -9,7 +10,7 @@ export type SendFn = (msg: ServerMsg) => void
 const ROOM_CODE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').filter((c) => c !== 'I' && c !== 'O')
 const ROOM_CODE_LENGTH = 4
 
-const MAP_ROTATION = ['gutter', 'hairpin']
+const MAP_ROTATION = ['gutter', 'hairpin', 'bastion']
 const ROOM_SIZE = TEAM_SIZE * 2
 
 const QUEUE_MAX_WAIT_MS = 10_000
@@ -39,6 +40,7 @@ interface PlayerConn {
 interface QueueEntry {
   id: string
   joinedAt: number
+  botDifficulty: Difficulty
 }
 
 export interface Room {
@@ -48,6 +50,24 @@ export interface Room {
   match: HostedMatch | null
   matchEnded: boolean
   rematchVotes: Set<string>
+  /** Difficulty bots are constructed with on the next launchMatch for this
+   * room (initial start and every rematch). Set from a validated
+   * quick_play/start_match botDifficulty; DEFAULT_DIFFICULTY otherwise. */
+  botDifficulty: Difficulty
+}
+
+/**
+ * Trust-boundary guard (fix 3, same allowlist style as the room-code regex):
+ * `input` arrives as untrusted client JSON off quick_play/start_match, so it
+ * is checked against the three known difficulty keys before ever reaching
+ * DIFFICULTIES. Returns undefined for anything missing or not in the
+ * allowlist, so a bad value falls back to whatever difficulty was already in
+ * effect rather than erroring out the whole request.
+ */
+function sanitizeBotDifficulty(input: unknown): Difficulty | undefined {
+  return typeof input === 'string' && input in DIFFICULTIES
+    ? DIFFICULTIES[input as keyof typeof DIFFICULTIES]
+    : undefined
 }
 
 /**
@@ -185,9 +205,9 @@ export class Lobby {
       case 'join_room':
         return this.onJoinRoom(player, msg.code)
       case 'start_match':
-        return this.onStartMatch(player)
+        return this.onStartMatch(player, msg.botDifficulty)
       case 'quick_play':
-        return this.onQuickPlay(player)
+        return this.onQuickPlay(player, msg.botDifficulty)
       case 'leave':
         return this.onLeave(player)
       case 'input':
@@ -211,6 +231,7 @@ export class Lobby {
       match: null,
       matchEnded: false,
       rematchVotes: new Set(),
+      botDifficulty: DEFAULT_DIFFICULTY,
     }
     this.rooms.set(code, room)
     player.roomCode = code
@@ -246,11 +267,12 @@ export class Lobby {
     this.broadcastRoom(room)
   }
 
-  private onStartMatch(player: PlayerConn): void {
+  private onStartMatch(player: PlayerConn, botDifficulty?: string): void {
     const room = player.roomCode ? this.rooms.get(player.roomCode) : undefined
     if (!room) return this.sendError(player, 'not in a room')
     if (room.hostId !== player.id) return this.sendError(player, 'only the host can start the match')
     if (room.match && !room.matchEnded) return this.sendError(player, 'match already in progress')
+    room.botDifficulty = sanitizeBotDifficulty(botDifficulty) ?? room.botDifficulty
     this.launchMatch(room, [...room.memberIds])
   }
 
@@ -305,10 +327,14 @@ export class Lobby {
 
   // ---- quick play ---------------------------------------------------------
 
-  private onQuickPlay(player: PlayerConn): void {
+  private onQuickPlay(player: PlayerConn, botDifficulty?: string): void {
     if (player.roomCode) this.leaveRoom(player.id, player.roomCode)
     if (this.queue.some((q) => q.id === player.id)) return
-    this.queue.push({ id: player.id, joinedAt: this.nowFn() })
+    this.queue.push({
+      id: player.id,
+      joinedAt: this.nowFn(),
+      botDifficulty: sanitizeBotDifficulty(botDifficulty) ?? DEFAULT_DIFFICULTY,
+    })
     player.send({ t: 'queue', position: this.queue.length })
     this.checkQueue()
   }
@@ -339,6 +365,9 @@ export class Lobby {
       match: null,
       matchEnded: false,
       rematchVotes: new Set(),
+      // First entry stands in for the room the way it already does for
+      // hostId above -- quick_play has no single "host" concept otherwise.
+      botDifficulty: entries[0].botDifficulty,
     }
     this.rooms.set(code, room)
     for (const id of humanIds) {
@@ -353,12 +382,13 @@ export class Lobby {
   private launchMatch(room: Room, humanIds: string[]): void {
     const mapName = this.nextMap()
     const seed = Math.floor(this.rand() * 0x7fffffff)
-    const match = new HostedMatch(mapName, seed, (id, msg) => this.routeToRoom(room, id, msg))
+    const match = new HostedMatch(mapName, seed, (id, msg) => this.routeToRoom(room, id, msg), undefined, room.botDifficulty)
     for (const id of humanIds) {
       const p = this.players.get(id)
       if (p) match.addHuman(id, p.name)
     }
     while (match.sim.players.size < ROOM_SIZE) match.addBot()
+    match.sim.beginWarmup(WARMUP_SEC)
 
     room.match = match
     room.matchEnded = false

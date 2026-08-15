@@ -3,6 +3,7 @@ import { MAX_HEALTH, MAX_SHIELD, RESPAWN_DELAY, WEAPONS, clamp } from '@riftlane
 import { audioEngine } from '../audio'
 import { announcer } from '../announcer'
 import { forwardXZ, rightXZ } from '../render/feel'
+import { store, saveSettings, DEFAULT_SENSITIVITY, DEFAULT_FOV, DEFAULT_PAD_SENSITIVITY, type Settings } from '../state'
 import './hud.css'
 
 type SnapshotMsg = Extract<ServerMsg, { t: 'snapshot' }>
@@ -28,6 +29,8 @@ const DAMAGE_PULSE_MS = 450
 const LOW_HEALTH_FRAC = 0.25
 const HEARTBEAT_INTERVAL_MAX = 1.1 // seconds, at exactly the 25% threshold
 const HEARTBEAT_INTERVAL_MIN = 0.55 // seconds, at 0 health -- faster as health drains
+const FIGHT_FLASH_MS = 800
+const PICKUP_TOAST_MS = 2400
 
 const TEAM_NAME: Record<Team, string> = { 0: 'Cobalt', 1: 'Ember' }
 const EQUIP_GLYPH: Record<EquipmentId, string> = { grapple: 'G', repulsor: 'R', camo: 'C' }
@@ -65,6 +68,19 @@ interface WeaponRowEls {
 interface ChipEls {
   chip: HTMLDivElement
   count: HTMLSpanElement
+}
+
+interface ScoreboardRowEls {
+  tr: HTMLTableRowElement
+  name: HTMLTableCellElement
+  kills: HTMLTableCellElement
+  deaths: HTMLTableCellElement
+  captures: HTMLTableCellElement
+}
+
+interface PauseSlider {
+  input: HTMLInputElement
+  value: HTMLSpanElement
 }
 
 /**
@@ -137,9 +153,23 @@ export class Hud {
    * tracker runs every frame, so it must never allocate per frame. */
   private readonly trackerBlipPool: HTMLDivElement[] = []
   private readonly inputPausedOverlay: HTMLDivElement
+  private readonly pausePanel: HTMLDivElement
+  private readonly pauseSensSlider: PauseSlider
+  private readonly pausePadSlider: PauseSlider
+  private readonly pauseFovSlider: PauseSlider
+  private readonly pauseVolSlider: PauseSlider
+  private readonly phaseBanner: HTMLDivElement
+  private readonly pickupToast: HTMLDivElement
   private readonly scoreboard: HTMLDivElement
   private readonly scoreboardCobaltBody: HTMLTableSectionElement
   private readonly scoreboardEmberBody: HTMLTableSectionElement
+  /** Scoreboard rows cached by player id, one map per team -- see
+   * renderScoreboardTeam(). Rebuilding the tbody from scratch every frame
+   * the scoreboard is held (Tab) was the perf bug this replaces. */
+  private readonly scoreboardRows: [Map<string, ScoreboardRowEls>, Map<string, ScoreboardRowEls>] = [
+    new Map(),
+    new Map(),
+  ]
 
   private readonly nameCache = new Map<string, string>()
   private readonly tally = new Map<string, TallyEntry>()
@@ -153,6 +183,11 @@ export class Hud {
   private killStreakCount = 0
   private killStreakRemaining = 0
   private heartbeatRemaining = 0
+  private wasInputPaused = false
+  private resumeHandler: (() => void) | null = null
+  private leaveHandler: (() => void) | null = null
+  private lastPhase: 'warmup' | 'playing' | 'ended' | null = null
+  private lastCountdownDisplay: number | null = null
 
   constructor() {
     this.root = el('div', 'hud')
@@ -243,13 +278,83 @@ export class Hud {
     this.calloutBanner = el('div', 'hud-callout')
     this.root.appendChild(this.calloutBanner)
 
+    // Backdrop stays pointer-events:none (inherited from .hud) so a click
+    // outside the panel still lands on the canvas and re-acquires pointer
+    // lock, same as the old click-anywhere-to-resume overlay. Only the panel
+    // itself opts back in to pointer-events:auto for its buttons/sliders.
     this.inputPausedOverlay = el('div', 'hud-input-paused')
+    this.pausePanel = el('div', 'hud-pause-panel')
     const pausedTitle = el('div', 'hud-input-paused-title')
-    pausedTitle.textContent = 'CLICK TO RESUME'
+    pausedTitle.textContent = 'PAUSED'
     const pausedHint = el('div', 'hud-input-paused-hint')
-    pausedHint.textContent = 'Mouse look and match input are paused'
-    this.inputPausedOverlay.append(pausedTitle, pausedHint)
+    pausedHint.textContent = 'Click outside this panel, or Resume, to continue'
+    this.pausePanel.append(pausedTitle, pausedHint)
+
+    const resumeBtn = el('button', 'btn btn--primary hud-pause-btn')
+    resumeBtn.type = 'button'
+    resumeBtn.textContent = 'Resume'
+    resumeBtn.addEventListener('click', () => {
+      audioEngine.play('ui_click')
+      this.resumeHandler?.()
+    })
+    this.pausePanel.appendChild(resumeBtn)
+
+    const sliders = el('div', 'hud-pause-sliders')
+    this.pauseSensSlider = this.buildPauseSlider(
+      sliders,
+      'Mouse sensitivity',
+      0.0005,
+      0.006,
+      0.0001,
+      (v) => v.toFixed(4),
+      (v) => this.patchSettings({ sensitivity: v })
+    )
+    this.pausePadSlider = this.buildPauseSlider(
+      sliders,
+      'Controller sensitivity',
+      0.1,
+      3,
+      0.1,
+      (v) => v.toFixed(1),
+      (v) => this.patchSettings({ padSensitivity: v })
+    )
+    this.pauseFovSlider = this.buildPauseSlider(
+      sliders,
+      'Field of view',
+      75,
+      100,
+      1,
+      (v) => `${Math.round(v)}°`,
+      (v) => this.patchSettings({ fov: Math.round(v) })
+    )
+    this.pauseVolSlider = this.buildPauseSlider(
+      sliders,
+      'Volume',
+      0,
+      1,
+      0.05,
+      (v) => `${Math.round(v * 100)}%`,
+      (v) => this.patchSettings({ volume: v })
+    )
+    this.pausePanel.appendChild(sliders)
+
+    const leaveBtn = el('button', 'btn btn--ghost hud-pause-btn')
+    leaveBtn.type = 'button'
+    leaveBtn.textContent = 'Leave Match'
+    leaveBtn.addEventListener('click', () => {
+      audioEngine.play('ui_click')
+      this.leaveHandler?.()
+    })
+    this.pausePanel.appendChild(leaveBtn)
+
+    this.inputPausedOverlay.appendChild(this.pausePanel)
     this.root.appendChild(this.inputPausedOverlay)
+
+    this.phaseBanner = el('div', 'hud-phase-banner')
+    this.root.appendChild(this.phaseBanner)
+
+    this.pickupToast = el('div', 'hud-pickup-toast')
+    this.root.appendChild(this.pickupToast)
 
     this.scoreboard = el('div', 'hud-scoreboard')
     const cobaltCol = this.buildScoreboardTeam(0)
@@ -318,6 +423,7 @@ export class Hud {
    * never touches sim state or the crosshair's kick/recovery mechanics. */
   setTargetTracked(active: boolean): void {
     this.crosshair.classList.toggle('hud-crosshair--target', active)
+    this.scopeOverlay.classList.toggle('hud-scope--target', active)
   }
 
   /** Toggled by the game every frame from InputManager.isLocked() (or on a
@@ -328,9 +434,29 @@ export class Hud {
    * with nothing on screen to explain why (docs/ERRORS.md, 2026-08-14).
    * The overlay is a child of `root`, which is pointer-events:none end to
    * end -- it must stay that way, or it eats the very click that would
-   * re-acquire lock and recover from this state. */
+   * re-acquire lock and recover from this state. The panel inside it is the
+   * one exception (see the constructor): it opts back in to
+   * pointer-events:auto so its Resume/Leave buttons and sliders are
+   * clickable, while the backdrop around it keeps passing clicks through. */
   setInputPaused(paused: boolean): void {
     this.inputPausedOverlay.classList.toggle('hud-input-paused--show', paused)
+    // Sync the sliders to the live settings only on the rising edge -- this
+    // is called every frame (game.ts:541), and refreshing on every one of
+    // those while the overlay is already open would fight a slider mid-drag.
+    if (paused && !this.wasInputPaused) this.refreshPauseSliders()
+    this.wasInputPaused = paused
+  }
+
+  /** Wired by the caller to re-request pointer lock; the Resume button in
+   * the pause panel calls it. */
+  setResumeHandler(fn: () => void): void {
+    this.resumeHandler = fn
+  }
+
+  /** Wired by the caller to leave the match; the Leave Match button in the
+   * pause panel calls it. */
+  setLeaveHandler(fn: () => void): void {
+    this.leaveHandler = fn
   }
 
   /** CSS-only aim-down-sights vignette + reticle. The caller (whoever drives
@@ -340,6 +466,59 @@ export class Hud {
   setScoped(active: boolean): void {
     this.scopeOverlay.classList.toggle('hud-scope--show', active)
     this.crosshair.classList.toggle('hud-crosshair--hidden', active)
+  }
+
+  /** Drives the big center-screen warmup countdown and the 'FIGHT' flash on
+   * the warmup->playing transition. Meant to be called every frame with the
+   * sim's current phase (SnapshotMsg.phase) and remaining warmup seconds --
+   * idempotent per frame: it only touches the DOM (and restarts the pulse
+   * animation) when the displayed number or the phase actually changes, so
+   * a steady countdown doesn't re-trigger its own pop every frame. */
+  setPhase(phase: 'warmup' | 'playing' | 'ended', countdownSec: number): void {
+    if (phase === 'warmup') {
+      const display = Math.max(0, Math.ceil(countdownSec))
+      if (this.lastPhase !== 'warmup' || this.lastCountdownDisplay !== display) {
+        this.phaseBanner.textContent = String(display)
+        this.phaseBanner.className = 'hud-phase-banner hud-phase-banner--countdown'
+        void this.phaseBanner.offsetWidth // restart the pulse animation on every new number
+        this.phaseBanner.classList.add('hud-phase-banner--pulse')
+        this.lastCountdownDisplay = display
+      }
+    } else if (phase === 'playing' && this.lastPhase === 'warmup') {
+      this.phaseBanner.textContent = 'FIGHT'
+      this.phaseBanner.className = 'hud-phase-banner hud-phase-banner--fight'
+      const t = setTimeout(() => {
+        this.phaseBanner.classList.remove('hud-phase-banner--fight')
+        this.phaseBanner.textContent = ''
+        this.pendingTimeouts.delete(t)
+      }, FIGHT_FLASH_MS)
+      this.pendingTimeouts.add(t)
+      this.lastCountdownDisplay = null
+    } else if (phase !== this.lastPhase) {
+      this.phaseBanner.textContent = ''
+      this.phaseBanner.className = 'hud-phase-banner'
+      this.lastCountdownDisplay = null
+    }
+    this.lastPhase = phase
+  }
+
+  /** Center-top toast for a power-weapon pickup. `weaponName` is a
+   * display-ready name (as shown in weapon rows/killfeed), not a raw
+   * WeaponId -- this only upper-cases it. No SimEvent carries who took a
+   * pickup by name, only whether it was the local player, so the non-local
+   * case stays deliberately generic rather than guessing at a name. */
+  notifyPickup(weaponName: string, byLocalPlayer: boolean): void {
+    const name = weaponName.toUpperCase()
+    this.pickupToast.textContent = byLocalPlayer ? `POWER WEAPON: ${name}` : `WEAPON TAKEN: ${name}`
+    this.pickupToast.classList.toggle('hud-pickup-toast--own', byLocalPlayer)
+    this.pickupToast.classList.remove('hud-pickup-toast--show')
+    void this.pickupToast.offsetWidth // restart the animation on a rapid second pickup
+    this.pickupToast.classList.add('hud-pickup-toast--show')
+    const t = setTimeout(() => {
+      this.pickupToast.classList.remove('hud-pickup-toast--show')
+      this.pendingTimeouts.delete(t)
+    }, PICKUP_TOAST_MS)
+    this.pendingTimeouts.add(t)
   }
 
   private buildCrosshair(): HTMLDivElement {
@@ -352,11 +531,7 @@ export class Hud {
 
   private buildScope(): HTMLDivElement {
     const wrap = el('div', 'hud-scope')
-    const reticle = el('div', 'hud-scope-reticle')
-    for (const dir of ['n', 's', 'w', 'e'] as const) {
-      reticle.appendChild(el('div', `hud-scope-reticle-line hud-scope-reticle-line--${dir}`))
-    }
-    wrap.appendChild(reticle)
+    wrap.appendChild(el('div', 'hud-scope-dot'))
     return wrap
   }
 
@@ -382,6 +557,67 @@ export class Hud {
     const count = el('span', 'hud-chip-count')
     chip.append(glyph, count)
     return { chip, glyph, count }
+  }
+
+  /** One labeled range row for the pause panel. `format` renders the live
+   * value label; `onCommit` fires on 'change' (drag release), matching the
+   * 'input' (live label)/'change' (commit) split ui/menu.ts's own settings
+   * sliders use. */
+  private buildPauseSlider(
+    parent: HTMLElement,
+    label: string,
+    min: number,
+    max: number,
+    step: number,
+    format: (v: number) => string,
+    onCommit: (v: number) => void
+  ): PauseSlider {
+    const row = el('div', 'field field--slider')
+    const lbl = el('label', 'field-label')
+    lbl.textContent = label
+    row.appendChild(lbl)
+    const input = el('input', 'range-input')
+    input.type = 'range'
+    input.min = String(min)
+    input.max = String(max)
+    input.step = String(step)
+    const value = el('span', 'field-value')
+    input.addEventListener('input', () => {
+      value.textContent = format(Number(input.value))
+    })
+    input.addEventListener('change', () => {
+      onCommit(Number(input.value))
+    })
+    row.append(input, value)
+    parent.appendChild(row)
+    return { input, value }
+  }
+
+  /** Writes into the same settings store + localStorage key ui/menu.ts's
+   * settings panel uses -- main.ts's store.subscribe() (volume -> audio)
+   * and game.ts's per-frame store.state.settings.sensitivity read both pick
+   * this up with no extra wiring needed here. */
+  private patchSettings(patch: Partial<Settings>): void {
+    const settings = { ...store.state.settings, ...patch }
+    saveSettings(settings)
+    store.set({ settings })
+  }
+
+  /** Pulls current values into the pause sliders. Called only on the
+   * false->true pause transition (see setInputPaused) -- calling this every
+   * frame while paused would fight a slider being actively dragged, since
+   * the range input's own 'input' listener updates the label live but
+   * hasn't committed to the store yet. */
+  private refreshPauseSliders(): void {
+    const s = store.state.settings
+    this.pauseSensSlider.input.value = String(s.sensitivity || DEFAULT_SENSITIVITY)
+    this.pauseSensSlider.value.textContent = (s.sensitivity || DEFAULT_SENSITIVITY).toFixed(4)
+    this.pausePadSlider.input.value = String(s.padSensitivity || DEFAULT_PAD_SENSITIVITY)
+    this.pausePadSlider.value.textContent = (s.padSensitivity || DEFAULT_PAD_SENSITIVITY).toFixed(1)
+    this.pauseFovSlider.input.value = String(s.fov || DEFAULT_FOV)
+    this.pauseFovSlider.value.textContent = `${Math.round(s.fov || DEFAULT_FOV)}°`
+    this.pauseVolSlider.input.value = String(s.volume)
+    this.pauseVolSlider.value.textContent = `${Math.round(s.volume * 100)}%`
   }
 
   private buildScoreboardTeam(team: Team): { el: HTMLDivElement; body: HTMLTableSectionElement } {
@@ -794,25 +1030,50 @@ export class Hud {
   private updateScoreboard(players: SnapPlayer[]): void {
     const groups: [SnapPlayer[], SnapPlayer[]] = [[], []]
     for (const p of players) groups[p.team].push(p)
-    this.renderScoreboardTeam(this.scoreboardCobaltBody, groups[0])
-    this.renderScoreboardTeam(this.scoreboardEmberBody, groups[1])
+    this.renderScoreboardTeam(this.scoreboardCobaltBody, this.scoreboardRows[0], groups[0])
+    this.renderScoreboardTeam(this.scoreboardEmberBody, this.scoreboardRows[1], groups[1])
   }
 
-  private renderScoreboardTeam(body: HTMLTableSectionElement, players: SnapPlayer[]): void {
-    body.innerHTML = '' // safe: only ever holds rows built below via textContent, no untrusted HTML
+  /** Perf fix: this used to be an innerHTML wipe + full rebuild every frame
+   * the scoreboard is held (up to 8 rows * 4 cells, every single frame).
+   * Rows are now cached by player id in `rows` and only their textContent
+   * is touched when a value actually changed; a row is only created or
+   * removed when the roster for this team actually gained or lost someone. */
+  private renderScoreboardTeam(body: HTMLTableSectionElement, rows: Map<string, ScoreboardRowEls>, players: SnapPlayer[]): void {
+    const seen = new Set<string>()
     for (const p of players) {
+      seen.add(p.id)
+      let row = rows.get(p.id)
+      if (!row) {
+        row = this.buildScoreboardRow()
+        rows.set(p.id, row)
+        body.appendChild(row.tr)
+      }
       const stats = this.tally.get(p.id)
-      const tr = el('tr')
-      const nameTd = el('td')
-      nameTd.textContent = p.bot ? `${p.name} [BOT]` : p.name
-      const kTd = el('td')
-      kTd.textContent = String(stats?.kills ?? 0)
-      const dTd = el('td')
-      dTd.textContent = String(stats?.deaths ?? 0)
-      const cTd = el('td')
-      cTd.textContent = String(stats?.captures ?? 0)
-      tr.append(nameTd, kTd, dTd, cTd)
-      body.appendChild(tr)
+      const name = p.bot ? `${p.name} [BOT]` : p.name
+      if (row.name.textContent !== name) row.name.textContent = name
+      const kills = String(stats?.kills ?? 0)
+      if (row.kills.textContent !== kills) row.kills.textContent = kills
+      const deaths = String(stats?.deaths ?? 0)
+      if (row.deaths.textContent !== deaths) row.deaths.textContent = deaths
+      const captures = String(stats?.captures ?? 0)
+      if (row.captures.textContent !== captures) row.captures.textContent = captures
     }
+    for (const [id, row] of rows) {
+      if (!seen.has(id)) {
+        row.tr.remove()
+        rows.delete(id)
+      }
+    }
+  }
+
+  private buildScoreboardRow(): ScoreboardRowEls {
+    const tr = el('tr')
+    const name = el('td')
+    const kills = el('td')
+    const deaths = el('td')
+    const captures = el('td')
+    tr.append(name, kills, deaths, captures)
+    return { tr, name, kills, deaths, captures }
   }
 }

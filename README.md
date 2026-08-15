@@ -1,6 +1,6 @@
 # RIFTLANE
 
-RIFTLANE is a browser-based 8-player capture-the-flag arena shooter, built as an original IP inspired by Husky Raid. Two teams of four fight across a small map, grappling and repulsor-jumping around cover, stealing the enemy flag, and capturing it at their own base. Movement is Halo-style: sprint, slide, clamber onto ledges mid-air, and forgiving jump timing. Everyone spawns with a Triad Rifle plus one random weapon from the pool. Carrying the flag costs you your gun -- carriers move at full speed but can only melee. Matches end at 3 captures or when the clock runs out.
+RIFTLANE is a browser-based 8-player capture-the-flag arena shooter, built as an original IP inspired by Husky Raid. Two teams of four fight across a small map, grappling and repulsor-jumping around cover, stealing the enemy flag, and capturing it at their own base. Movement is Halo-style: sprint, slide, clamber onto ledges mid-air, and forgiving jump timing. Everyone spawns with a random gun plus a second random weapon from the pool, and power weapons spawn on timed map pads worth fighting over. Matches open with a short warmup countdown, respawns get a brief protection window, and three maps rotate: the tight lane of gutter, hairpin's U-bend, and bastion, a three-route arena about three times gutter's size. Quick Play lets you pick the bot difficulty. Carrying the flag costs you your gun -- carriers move at full speed but can only melee. Matches end at 3 captures or when the clock runs out.
 
 Fights are the Halo two-stage kill: strip the shield first, then finish. **Headshot multipliers only pay out once a target's shield is down**, so a fight is a rhythm rather than a race, and sparks tell you which stage you are in -- blue while you are chipping the shield, red once you are into health. A beatdown landed inside a target's own rear arc kills outright. A motion tracker paints anyone moving nearby, an announcer calls the match, and the post-game carnage report hands out medals. Any empty human slots are filled by server-side bots, so a match can start (and keep running through a disconnect) with as few as one human player.
 
@@ -20,6 +20,21 @@ Fights are the Halo two-stage kill: strip the shield first, then finish. **Heads
 | `E` | Use equipment (grapple / repulsor / camo) |
 | `1` `2` / mouse wheel | Swap weapon |
 | `Tab` | Scoreboard |
+| `Esc` | Pause menu (settings sliders + leave match) |
+
+### Xbox controller
+
+Plug in (or pair) a standard-mapping controller and touch any stick or button — the game switches to it automatically, and switches back the moment the mouse moves. Movement is analog, and aim gets a mild slowdown while the reticle is over a target.
+
+| Input | Action |
+| --- | --- |
+| Left stick | Move (click to sprint) |
+| Right stick | Look |
+| `RT` / `LT` | Fire / Aim down sights |
+| `A` / `B` | Jump / Slide |
+| `X` / `Y` | Equipment / Swap weapon |
+| `RB` / `LB` | Grenade / Melee |
+| View / Menu | Scoreboard / Pause |
 
 ## Running it
 

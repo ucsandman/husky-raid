@@ -117,6 +117,11 @@ export interface PlayerState {
   coyoteTimeRemaining: number
   /** Countdown (seconds remaining), same convention as teleportCooldownUntil. */
   jumpBufferRemaining: number
+  /** Absolute sim timestamp, same convention as cooldownUntil: damage is
+   * absorbed while now < spawnProtectedUntil. Set on respawn, cleared the
+   * moment the protected player fires. Optional so hand-built states and
+   * older tests stay valid; absent reads as 0 (no protection). */
+  spawnProtectedUntil?: number
   /** True while the player is currently aiming down sights (scoped) --
    * recomputed every tick directly from input.ads, mirroring how
    * sprinting is recomputed from input.sprint. Tightens hitscan/burst

@@ -21,6 +21,13 @@ export interface Settings {
   name: string
   sensitivity: number
   volume: number
+  /** Vertical FOV in degrees, slider range 75-100 (see ui/menu.ts, ui/hud.ts
+   * pause panel). Consumption (writing it onto the camera) is out of scope
+   * here -- game.ts currently reads its own baseFov off the camera. */
+  fov: number
+  /** Gamepad look-sensitivity multiplier, slider range 0.1-3. Consumption is
+   * out of scope here, same as `fov` above. */
+  padSensitivity: number
 }
 
 export interface ClientState {
@@ -41,6 +48,8 @@ export interface ClientState {
 
 const SETTINGS_KEY = 'riftlane:settings'
 export const DEFAULT_SENSITIVITY = 0.002
+export const DEFAULT_FOV = 90
+export const DEFAULT_PAD_SENSITIVITY = 1
 
 export function loadSettings(): Settings {
   try {
@@ -51,12 +60,18 @@ export function loadSettings(): Settings {
         name: typeof parsed.name === 'string' ? parsed.name : '',
         sensitivity: typeof parsed.sensitivity === 'number' ? parsed.sensitivity : DEFAULT_SENSITIVITY,
         volume: typeof parsed.volume === 'number' ? parsed.volume : 1,
+        // Both added after the original settings shape shipped -- a saved
+        // blob from before this change simply lacks the keys, so the
+        // same typeof-guard defaulting pattern as the fields above covers
+        // the migration with no version bump needed.
+        fov: typeof parsed.fov === 'number' ? parsed.fov : DEFAULT_FOV,
+        padSensitivity: typeof parsed.padSensitivity === 'number' ? parsed.padSensitivity : DEFAULT_PAD_SENSITIVITY,
       }
     }
   } catch {
     // corrupt/unavailable localStorage -- fall through to defaults
   }
-  return { name: '', sensitivity: DEFAULT_SENSITIVITY, volume: 1 }
+  return { name: '', sensitivity: DEFAULT_SENSITIVITY, volume: 1, fov: DEFAULT_FOV, padSensitivity: DEFAULT_PAD_SENSITIVITY }
 }
 
 export function saveSettings(settings: Settings): void {

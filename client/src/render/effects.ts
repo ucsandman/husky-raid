@@ -1,14 +1,16 @@
 import * as THREE from 'three'
-import type { SimEvent, SnapProjectile, Vec3 } from '@riftlane/shared'
-import { viewDir } from '@riftlane/shared'
+import type { GameMap, SimEvent, SnapProjectile, Vec3 } from '@riftlane/shared'
+import { PICKUP_RADIUS, WEAPONS, viewDir } from '@riftlane/shared'
 import { disposeObject3D } from './dispose'
 import { makeFlareTexture, makeSoftDotTexture, makeStreakTexture } from './materials'
+import { accentColor, buildWeaponHolo } from './viewmodel'
 
 const TRACER_LIFE = 0.09
 const MUZZLE_LIFE = 0.07
 const EXPLOSION_LIFE = 0.34
 const RING_LIFE = 0.42
 const SPARK_LIFE = 0.3
+const SLASH_LIFE = 0.2
 // Halo-style thin readable tracers, not fat glowing orbs: was 30 long x
 // 0.045 radius, which read as a persistent fat laser beam, especially
 // stacked across a 10rps weapon like pulse_smg.
@@ -21,6 +23,25 @@ const RING_POOL = 10
 const SPARK_POOL = 12
 const SPARK_POINTS = 22
 const SPARK_BURST_RADIUS = 0.5
+const SLASH_POOL = 6
+/** Metres in front of the swinger's eye. Well inside MELEE_RANGE, and far
+ * enough out that the swinger's OWN slash reads as an arc in front of him
+ * rather than a wipe across the whole screen -- these events fire for the
+ * local player too, and at 90 degrees vertical FOV the half-screen height in
+ * metres is the same number as this distance. */
+const SLASH_DIST = 1.2
+
+// ---- power-weapon pickup pads -------------------------------------------
+const PAD_RING_OPACITY = 0.55
+/** Collected pads stay drawn but dim, so a player can still see WHERE the
+ * rocket spawns while it is on cooldown. */
+const PAD_RING_DIM = 0.12
+const PAD_HOLO_OPACITY = 0.5
+const PAD_HOLO_HEIGHT = 1.05
+const PAD_HOLO_SCALE = 1.35
+const PAD_HOLO_SPIN = 0.7 // rad/s
+const PAD_HOLO_BOB = 0.09 // metres, half-amplitude
+const PAD_HOLO_BOB_RATE = 1.3
 
 // Bright white core (was a warm amber tint) reads crisper at speed and
 // against the arena's cool lighting -- muzzle flash below keeps the amber.
@@ -33,18 +54,41 @@ const SHIELD_SPARK_COLOR = 0x9fe6ff
  * the ok/warn/danger band -- never cobalt/ember, which mean team identity. */
 const HEALTH_SPARK_COLOR = 0xff4d5e
 const DEATH_COLOR = 0xff5f7a
+/** Power-melee arc: the same hot amber the explosions use, so an arc_blade
+ * lunge reads as "that hurt" at a glance. A bare bash is plain white and
+ * smaller -- it is the weakest attack in the game and should look it. */
+const SLASH_POWER_COLOR = 0xffb066
+const SLASH_BASH_COLOR = 0xe8f4ff
 
 // syncProjectiles orients a mesh toward its velocity every frame for every
 // live projectile -- a shared, never-mutated axis constant plus one reused
 // scratch vector (below, on the class) avoids two `new THREE.Vector3()`
 // allocations per projectile per frame.
 const UP_AXIS = new THREE.Vector3(0, 1, 0)
+/** Arc-slash planes are authored facing +Z, the same convention the tracer
+ * cylinder uses for UP_AXIS -- aimed by rotating that axis onto the view
+ * direction. */
+const FORWARD_AXIS = new THREE.Vector3(0, 0, 1)
 
 interface Slot<T extends THREE.Object3D> {
   obj: T
   active: boolean
   life: number
   maxLife: number
+}
+
+type PickupDefs = NonNullable<GameMap['powerPickups']>
+
+/** One power-weapon pad: a floor ring that dims while the weapon is on
+ * cooldown, and a hovering hologram of the weapon itself that disappears with
+ * it. Built once per match, animated in place -- never per-frame allocated. */
+interface PickupPad {
+  ring: THREE.Mesh
+  ringMat: THREE.MeshBasicMaterial
+  holo: THREE.Mesh | null
+  baseY: number
+  color: number
+  up: boolean
 }
 
 interface ProjectileKit {
@@ -74,6 +118,12 @@ export class EffectsSystem {
   private readonly explosions: Slot<THREE.Mesh>[] = []
   private readonly rings: Slot<THREE.Mesh>[] = []
   private readonly sparks: Slot<THREE.Points>[] = []
+  private readonly slashes: Slot<THREE.Mesh>[] = []
+  private readonly pickupPads: PickupPad[] = []
+  private pickupGroup: THREE.Group | null = null
+  /** Identity of the defs array the pads were built from, so syncPickups can
+   * rebuild on a map change and do nothing on every other frame. */
+  private pickupDefs: PickupDefs | null = null
   private readonly projectileMeshes = new Map<number, THREE.Object3D>()
   private readonly projectileKits = new Map<SnapProjectile['kind'], ProjectileKit>()
   private readonly deathFade: THREE.Mesh
@@ -85,6 +135,7 @@ export class EffectsSystem {
   private explosionCursor = 0
   private ringCursor = 0
   private sparkCursor = 0
+  private slashCursor = 0
 
   constructor(scene: THREE.Scene, camera: THREE.Camera) {
     this.scene = scene
@@ -94,6 +145,7 @@ export class EffectsSystem {
     for (let i = 0; i < EXPLOSION_POOL; i++) this.explosions.push(this.makeExplosionSlot())
     for (let i = 0; i < RING_POOL; i++) this.rings.push(this.makeRingSlot())
     for (let i = 0; i < SPARK_POOL; i++) this.sparks.push(this.makeSparkSlot())
+    for (let i = 0; i < SLASH_POOL; i++) this.slashes.push(this.makeSlashSlot())
 
     const fadeMat = new THREE.MeshBasicMaterial({
       color: 0x000000,
@@ -214,6 +266,28 @@ export class EffectsSystem {
     return { obj: points, active: false, life: 0, maxLife: SPARK_LIFE }
   }
 
+  /** A ring segment, not a full ring: the open end is what makes it read as a
+   * swipe with a start and a finish rather than a halo. thetaStart tilts it
+   * so the arc runs low-left to high-right across the swing. */
+  private makeSlashSlot(): Slot<THREE.Mesh> {
+    const geom = new THREE.RingGeometry(0.3, 0.52, 20, 1, -Math.PI * 0.16, Math.PI * 0.78)
+    const mat = new THREE.MeshBasicMaterial({
+      color: SLASH_POWER_COLOR,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      fog: false,
+    })
+    const mesh = new THREE.Mesh(geom, mat)
+    mesh.visible = false
+    mesh.frustumCulled = false
+    mesh.renderOrder = 7
+    this.scene.add(mesh)
+    return { obj: mesh, active: false, life: 0, maxLife: SLASH_LIFE }
+  }
+
   // ---- spawn ----------------------------------------------------------------
 
   spawnTracer(from: Vec3, yaw: number, pitch: number): void {
@@ -283,6 +357,33 @@ export class EffectsSystem {
     mat.opacity = 1
   }
 
+  /**
+   * The arc a melee swing carves in front of the swinger: a short-lived
+   * additive ribbon at eye height, planted along the facing so it sweeps
+   * exactly the volume the sim's melee cone covers. `scale` separates a
+   * power-weapon lunge from a bare bash.
+   */
+  spawnSlash(eye: Vec3, yaw: number, pitch: number, color: number, scale: number): void {
+    const slot = this.slashes[this.slashCursor]
+    this.slashCursor = (this.slashCursor + 1) % this.slashes.length
+    const dir = viewDir(yaw, pitch)
+    slot.obj.position.set(
+      eye.x + dir.x * SLASH_DIST,
+      eye.y + dir.y * SLASH_DIST,
+      eye.z + dir.z * SLASH_DIST
+    )
+    this.scratchDir.set(dir.x, dir.y, dir.z)
+    slot.obj.quaternion.setFromUnitVectors(FORWARD_AXIS, this.scratchDir)
+    slot.obj.scale.setScalar(scale * 0.6)
+    slot.obj.userData.endScale = scale
+    slot.obj.visible = true
+    slot.active = true
+    slot.life = 0
+    const mat = slot.obj.material as THREE.MeshBasicMaterial
+    mat.color.setHex(color)
+    mat.opacity = 0.95
+  }
+
   spawnShieldSpark(pos: Vec3): void {
     this.spawnSparks(pos, SHIELD_SPARK_COLOR, 1)
   }
@@ -299,19 +400,34 @@ export class EffectsSystem {
     this.spawnSparks(pos, intoHealth ? HEALTH_SPARK_COLOR : SHIELD_SPARK_COLOR, 0.6)
   }
 
-  /** Drives tracers + muzzle flashes off 'shot' events, explosions off
-   * 'explosion' events, and a spark/ring burst off 'kill'. Shield-break
-   * sparks aren't driven from here -- the protocol has no shield_break
-   * SimEvent, so game.ts diffs shield values frame-to-frame and calls
-   * spawnShieldSpark() directly. */
+  /** Drives tracers + muzzle flashes off 'shot' events, arc slashes off
+   * melee, explosions off 'explosion' events, and a spark/ring burst off
+   * 'kill'. Shield-break sparks aren't driven from here -- the protocol has
+   * no shield_break SimEvent, so game.ts diffs shield values frame-to-frame
+   * and calls spawnShieldSpark() directly. */
   handleEvents(events: SimEvent[], eyeOf: (id: string) => { pos: Vec3; yaw: number; pitch: number } | undefined): void {
     for (const ev of events) {
       if (ev.type === 'shot') {
         const shooter = eyeOf(ev.playerId)
-        if (shooter) {
+        if (!shooter) continue
+        if (WEAPONS[ev.weapon].kind === 'power_melee') {
+          // A power-melee swing emits BOTH a 'melee_swing' and this 'shot'
+          // (sim.ts pushes the shot so the client still gets its fire
+          // feedback). A 20m tracer and a muzzle flash off a sword read as a
+          // bug, so it draws an arc instead -- and it draws it from HERE, not
+          // from the paired melee_swing, so one swing is one slash.
+          this.spawnSlash(shooter.pos, shooter.yaw, shooter.pitch, SLASH_POWER_COLOR, 1)
+        } else {
           this.spawnTracer(shooter.pos, shooter.yaw, shooter.pitch)
           this.spawnMuzzleFlash(shooter.pos)
         }
+      } else if (ev.type === 'melee_swing') {
+        // weapon !== null is the power-melee case already slashed above.
+        // Only the unarmed bash needs one from here: smaller and white,
+        // because it is the weakest attack in the game.
+        if (ev.weapon !== null) continue
+        const swinger = eyeOf(ev.playerId)
+        if (swinger) this.spawnSlash(swinger.pos, swinger.yaw, swinger.pitch, SLASH_BASH_COLOR, 0.62)
       } else if (ev.type === 'explosion') {
         this.spawnExplosion(ev.pos)
       } else if (ev.type === 'kill') {
@@ -395,6 +511,118 @@ export class EffectsSystem {
     return { core, coreMat, glow, glowMat }
   }
 
+  // ---- power-weapon pickup pads -----------------------------------------------
+
+  /**
+   * Draws one pad per map power-pickup: a glowing floor ring at the real
+   * PICKUP_RADIUS, and a hovering hologram of the weapon waiting on it. `up`
+   * is the snapshot's per-pad availability -- a collected pad loses its
+   * hologram and dims to a marker until it respawns, which is the only cue a
+   * player gets that the rocket is already taken.
+   *
+   * Called every frame. The pads themselves are built once, keyed on the
+   * identity of the map's own defs array, so a steady map is two comparisons
+   * per frame and the visibility work only runs on an actual flip.
+   */
+  syncPickups(defs: PickupDefs, up?: boolean[]): void {
+    // The caller passes `map.powerPickups ?? []`, so a padless map hands us a
+    // FRESH empty array every frame -- rebuilding on identity alone would
+    // thrash. Nothing to build and nothing built means nothing to do.
+    if (defs !== this.pickupDefs && (defs.length > 0 || this.pickupPads.length > 0)) {
+      this.buildPickups(defs)
+    }
+    for (let i = 0; i < this.pickupPads.length; i++) {
+      const pad = this.pickupPads[i]
+      const isUp = up?.[i] ?? true
+      if (isUp === pad.up) continue
+      pad.up = isUp
+      if (pad.holo) pad.holo.visible = isUp
+      pad.ringMat.opacity = isUp ? PAD_RING_OPACITY : PAD_RING_DIM
+      // A respawn is worth looking up for: one pooled shockwave in the
+      // weapon's own colour, off the ring pool that already exists.
+      if (isUp) this.spawnRing(pad.ring.position, pad.color, 2.4)
+    }
+  }
+
+  private buildPickups(defs: PickupDefs): void {
+    this.disposePickups()
+    this.pickupDefs = defs
+    if (defs.length === 0) return
+
+    const group = new THREE.Group()
+    group.name = 'pickupPads'
+    for (const def of defs) {
+      const color = accentColor(def.weapon)
+      const ringMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: PAD_RING_OPACITY,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        fog: false,
+      })
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(PICKUP_RADIUS * 0.62, PICKUP_RADIUS * 0.92, 26),
+        ringMat
+      )
+      ring.rotation.x = -Math.PI / 2
+      ring.position.set(def.pos.x, def.pos.y + 0.05, def.pos.z)
+      ring.renderOrder = 5
+      group.add(ring)
+
+      const holoMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: PAD_HOLO_OPACITY,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        fog: false,
+      })
+      const holo = buildWeaponHolo(def.weapon, holoMat)
+      if (holo) {
+        holo.scale.setScalar(PAD_HOLO_SCALE)
+        holo.position.set(def.pos.x, def.pos.y + PAD_HOLO_HEIGHT, def.pos.z)
+        holo.renderOrder = 6
+        group.add(holo)
+      } else {
+        holoMat.dispose()
+      }
+
+      this.pickupPads.push({
+        ring,
+        ringMat,
+        holo,
+        baseY: def.pos.y + PAD_HOLO_HEIGHT,
+        color,
+        up: true,
+      })
+    }
+    this.scene.add(group)
+    this.pickupGroup = group
+  }
+
+  /** Spin + bob, phase-offset by world X the same way tickMapPulse offsets
+   * its bobbing props, so two pads on one map never breathe in lockstep. */
+  private advancePickups(): void {
+    for (const pad of this.pickupPads) {
+      if (!pad.holo) continue
+      pad.holo.rotation.y = this.time * PAD_HOLO_SPIN
+      pad.holo.position.y =
+        pad.baseY + Math.sin(this.time * PAD_HOLO_BOB_RATE + pad.ring.position.x) * PAD_HOLO_BOB
+    }
+  }
+
+  private disposePickups(): void {
+    if (this.pickupGroup) {
+      this.scene.remove(this.pickupGroup)
+      disposeObject3D(this.pickupGroup)
+    }
+    this.pickupGroup = null
+    this.pickupDefs = null
+    this.pickupPads.length = 0
+  }
+
   // ---- map animation + death fade ---------------------------------------------
 
   /**
@@ -447,6 +675,23 @@ export class EffectsSystem {
     for (const slot of this.sparks) this.advanceSpark(slot, dt)
     for (const slot of this.rings) this.advanceRing(slot, dt)
     for (const slot of this.explosions) this.advanceExplosion(slot, dt)
+    for (const slot of this.slashes) this.advanceSlash(slot, dt)
+    if (this.pickupPads.length > 0) this.advancePickups()
+  }
+
+  private advanceSlash(slot: Slot<THREE.Mesh>, dt: number): void {
+    if (!slot.active) return
+    slot.life += dt
+    const t = Math.min(1, slot.life / slot.maxLife)
+    const end = (slot.obj.userData.endScale as number) ?? 1
+    // Opens outward as it fades -- a swipe that grows reads as a swing
+    // following through, where a shrinking one reads as a hit landing.
+    slot.obj.scale.setScalar(end * (0.6 + t * 0.75))
+    ;(slot.obj.material as THREE.MeshBasicMaterial).opacity = 0.95 * (1 - t) * (1 - t)
+    if (slot.life >= slot.maxLife) {
+      slot.active = false
+      slot.obj.visible = false
+    }
   }
 
   private advanceTracer(slot: Slot<THREE.Mesh>, dt: number): void {
@@ -518,14 +763,22 @@ export class EffectsSystem {
 
   // ---- teardown -----------------------------------------------------------------
 
-  /** Releases every GPU resource this system owns: all five pools, every
-   * live projectile mesh plus the shared per-kind kits behind them, the
-   * three canvas textures, and the death-fade plane (removed from the camera
-   * it was parented to in the constructor). Called once from
+  /** Releases every GPU resource this system owns: all six pools, the pickup
+   * pads, every live projectile mesh plus the shared per-kind kits behind
+   * them, the three canvas textures, and the death-fade plane (removed from
+   * the camera it was parented to in the constructor). Called once from
    * game.teardown() when a match ends -- without it, every rematch would
    * leak this match's effect pools, projectile geometries and textures. */
   dispose(): void {
-    const pools: Slot<THREE.Object3D>[][] = [this.tracers, this.muzzles, this.explosions, this.rings, this.sparks]
+    this.disposePickups()
+    const pools: Slot<THREE.Object3D>[][] = [
+      this.tracers,
+      this.muzzles,
+      this.explosions,
+      this.rings,
+      this.sparks,
+      this.slashes,
+    ]
     for (const pool of pools) {
       for (const slot of pool) {
         this.scene.remove(slot.obj)

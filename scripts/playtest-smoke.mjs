@@ -50,6 +50,7 @@ await ctx.addInitScript(() => {
         const m = JSON.parse(ev.data)
         if (m.t === 'match_start') window.__probe.myId = m.yourId
         if (m.t === 'snapshot' && window.__probe.myId) {
+          window.__probe.phase = m.phase ?? 'playing'
           const me = m.players.find((p) => p.id === window.__probe.myId)
           if (me) window.__probe.snaps.push({ pos: me.pos, vel: me.vel, yaw: me.yaw, ammo: me.ammo, alive: me.alive })
         }
@@ -87,7 +88,10 @@ try {
   await page.getByText('Quick Play').click()
   // Solo quick play waits ~10s before filling with bots.
   await page.waitForFunction(() => window.__probe.myId && window.__probe.snaps.length > 5, null, { timeout: 90000 })
-  await page.locator('canvas').click()
+  // The pause panel now covers screen center while input is paused, so a
+  // canvas-center click gets intercepted. Clicking its Resume button is the
+  // real player path and doubles as a check that the new panel works.
+  await page.getByRole('button', { name: 'Resume' }).click()
   await page.waitForTimeout(500)
 
   // --- keyboard reaches the server -------------------------------------
@@ -130,6 +134,10 @@ try {
   // Retried: waitAlive only guarantees the player is alive at the START, and
   // dying mid-burst resets the magazine, which reads as "the gun never
   // fired". `survived` distinguishes a real input failure from a death.
+  // Matches now open with a WARMUP_SEC countdown during which firing is
+  // inert by design -- wait for the sim to go live before testing the gun.
+  await page.waitForFunction(() => window.__probe.phase === 'playing', null, { timeout: 20000 })
+
   let fired = null
   for (let attempt = 0; attempt < 3; attempt++) {
     await waitAlive()

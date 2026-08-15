@@ -53,6 +53,8 @@ import {
   DEFAULT_PROJECTILE_SPEED,
   SWAP_COOLDOWN,
   RELOAD_TIME,
+  SPAWN_PROTECT_SEC,
+  PICKUP_RADIUS,
   HOMING_CONE_ANGLE,
   MELEE_LUNGE_SPEED,
   BACKSMACK_VIEW_CONE,
@@ -75,9 +77,19 @@ export type SimEvent =
   | { type: 'kill'; killerId: string; victimId: string; weapon: string; head: boolean; streak?: number }
   | { type: 'capture'; playerId: string; team: Team }
   | { type: 'flag_taken' | 'flag_dropped' | 'flag_returned'; team: Team; playerId?: string }
-  | { type: 'shot'; playerId: string; weapon: WeaponId }
+  /** `hit` is the first-ray impact point for hitscan/burst shots (absent
+   * for misses past max range, projectiles, and melee) so the client can
+   * place impact sparks at the real hit location. */
+  | { type: 'shot'; playerId: string; weapon: WeaponId; hit?: Vec3 }
   | { type: 'explosion'; pos: Vec3 }
   | { type: 'match_end'; winner: Team | null }
+  /** Any melee-bash attempt (weapon: null) or power-melee trigger, hit or
+   * whiff, so a swing is never silent/invisible on the client. */
+  | { type: 'melee_swing'; playerId: string; weapon: WeaponId | null }
+  /** A player collected a map power-weapon pad. */
+  | { type: 'pickup'; playerId: string; weapon: WeaponId }
+  /** Warmup ended; combat is live. */
+  | { type: 'match_go' }
 
 function defaultInput(p: PlayerState): PlayerInput {
   return {
@@ -146,9 +158,19 @@ export class MatchSim {
   flags: [FlagState, FlagState]
   scores: [number, number] = [0, 0]
   timeLeft: number = MATCH_TIME
-  phase: 'playing' | 'ended' = 'playing'
+  phase: 'warmup' | 'playing' | 'ended' = 'playing'
+
+  /** Absolute timestamp each map powerPickups pad becomes collectable
+   * again, index-aligned with map.powerPickups. Sparse on purpose: an index
+   * never taken reads undefined, which means available. Not private (no
+   * `private`) so stepPickups -- a module-private free function below --
+   * can reach it, same as nextId/nextRand/killPlayer. */
+  pickupAvailableAt: number[] = []
 
   private rand: () => number
+  /** Seconds left in the pre-combat warmup. Only meaningful while
+   * phase === 'warmup'; a sim that never calls beginWarmup never reads it. */
+  private warmupRemaining = 0
   private inputs: Map<string, PlayerInput> = new Map()
   private lastGroundedPos: Map<string, Vec3> = new Map()
   private nextProjectileId = 0
@@ -167,6 +189,27 @@ export class MatchSim {
       { state: 'stand', pos: { ...map.flagStands[0] } },
       { state: 'stand', pos: { ...map.flagStands[1] } },
     ]
+  }
+
+  /**
+   * Opens the match with a `seconds`-long pre-combat warmup. Movement,
+   * jumping, weapon swaps and equipment stay live; firing, grenade throws,
+   * melee and flag pickups are inert until it ends, at which point phase
+   * flips to 'playing', timeLeft resets to MATCH_TIME and a match_go event
+   * is pushed. While it runs, timeLeft carries the warmup remainder so the
+   * HUD counts 3-2-1 off the one timer field it already reads. A sim that
+   * never calls this stays 'playing' from tick one, exactly as before.
+   */
+  beginWarmup(seconds: number): void {
+    this.phase = 'warmup'
+    this.warmupRemaining = seconds
+    this.timeLeft = seconds
+  }
+
+  /** Per-pad availability of map.powerPickups for the wire snapshot,
+   * index-aligned with that array. Empty for a map with no pads. */
+  pickupsUp(): boolean[] {
+    return (this.map.powerPickups ?? []).map((_, i) => this.now >= (this.pickupAvailableAt[i] ?? 0))
   }
 
   addPlayer(id: string, name: string, team: Team, bot: boolean): PlayerState {
@@ -287,6 +330,9 @@ export class MatchSim {
     const events: SimEvent[] = [...this.pendingEvents]
     this.pendingEvents = []
     const dt = TICK_DT
+    // Read once at the top so the tick that ENDS warmup is still fully inert
+    // -- combat goes live on the next tick, right after match_go lands.
+    const live = this.phase === 'playing'
 
     // 1. respawns due
     for (const p of this.players.values()) {
@@ -312,10 +358,13 @@ export class MatchSim {
         continue
       }
 
-      stepFire(this, p, input, now, events)
-      stepGrenade(this, p, input, now)
+      stepFire(this, p, input, now, events, live)
+      if (live) stepGrenade(this, p, input, now)
       stepEquipment(this, p, input, now)
     }
+
+    // 2b. map power-weapon pads
+    if (live) stepPickups(this, now, events)
 
     // 3. projectiles step + explosions. frag/mag already self-detonate at
     // their FRAG_FUSE/MAG_FUSE via stepProjectile's own fuseAt check, so
@@ -347,9 +396,22 @@ export class MatchSim {
     }
 
     // 5. flags
-    stepFlags(this, now, events)
+    if (live) stepFlags(this, now, events)
 
     // 6. timers
+    if (this.phase === 'warmup') {
+      this.warmupRemaining = Math.max(0, this.warmupRemaining - dt)
+      // timeLeft doubles as the warmup countdown so the HUD/wire need no
+      // second field; it snaps back to MATCH_TIME the moment combat opens.
+      this.timeLeft = this.warmupRemaining
+      if (this.warmupRemaining <= 0) {
+        this.phase = 'playing'
+        this.timeLeft = MATCH_TIME
+        events.push({ type: 'match_go' })
+      }
+      return events
+    }
+
     this.timeLeft = Math.max(0, this.timeLeft - dt)
     if (this.scores[0] >= CAPTURES_TO_WIN || this.scores[1] >= CAPTURES_TO_WIN || this.timeLeft <= 0) {
       this.phase = 'ended'
@@ -435,6 +497,11 @@ export class MatchSim {
     p.coyoteTimeRemaining = 0
     p.jumpBufferRemaining = 0
     p.scoped = false
+    // Respawn protection: a short window where damage is absorbed, so a
+    // player cannot be shot the instant they materialise. Given up early by
+    // the protected player's own first shot (see stepFire). Only respawns
+    // get it -- the initial addPlayer spawn happens before anyone can shoot.
+    p.spawnProtectedUntil = this.now + SPAWN_PROTECT_SEC
     this.lastGroundedPos.set(p.id, { ...spawn })
   }
 
@@ -588,11 +655,27 @@ function doMeleeAttack(
  * rate-limited by cooldownUntil. Melee/power-melee resolve in a view
  * cone; hitscan/burst cast one jittered raycast per pellet; projectile/
  * charge weapons spawn a Projectile stepped in phase 3. */
-function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number, events: SimEvent[]): void {
+function stepFire(
+  sim: MatchSim,
+  p: PlayerState,
+  input: PlayerInput,
+  now: number,
+  events: SimEvent[],
+  live: boolean
+): void {
   if (input.swap && now >= p.swapCooldownUntil) {
     p.activeWeapon = p.activeWeapon === 0 ? 1 : 0
     p.swapCooldownUntil = now + SWAP_COOLDOWN
+    // Bug fix: cooldownUntil is one field shared by both slots, so the gun
+    // you just holstered used to keep gating the one you drew -- swapping
+    // off a fired railspike (1.33s rof) left the sidearm dead for over a
+    // second. The incoming weapon is gated by swapCooldownUntil alone.
+    p.cooldownUntil = 0
   }
+
+  // Warmup: running, jumping and picking your gun are all live, but nothing
+  // that can deal damage resolves until match_go.
+  if (!live) return
 
   // Melee runs on its OWN cooldown, ahead of and independent of the weapon's
   // rate-of-fire and reload lockouts. Sharing cooldownUntil meant an empty
@@ -601,6 +684,11 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
   // (spec §2) -- only shooting is denied them, below.
   if (input.melee) {
     if (now >= p.meleeCooldownUntil) {
+      // Pushed before the attack resolves so the swing always precedes any
+      // kill it causes, and so a whiff is still seen/heard on the client --
+      // a bash used to be completely silent unless it happened to connect.
+      // Presses blocked by the cooldown push nothing.
+      events.push({ type: 'melee_swing', playerId: p.id, weapon: null })
       doMeleeAttack(sim, p, MELEE_RANGE, MELEE_DAMAGE, 'melee', now, events)
       p.meleeCooldownUntil = now + MELEE_COOLDOWN
     }
@@ -626,6 +714,10 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
   const weapon = WEAPONS[weaponId]
 
   if (weapon.kind === 'power_melee') {
+    // Carries the weapon id (a bash carries null), which is how the client
+    // tells the two apart -- it plays the swing but suppresses the tracer
+    // the 'shot' event below would otherwise draw.
+    events.push({ type: 'melee_swing', playerId: p.id, weapon: weaponId })
     doMeleeAttack(sim, p, weapon.lungeRange ?? MELEE_RANGE, weapon.damage, weaponId, now, events)
     // Bug fix (diagnosis-confirmed): this branch returned before the 'shot'
     // event below, so arc_blade/grav_maul dealt real damage but the client
@@ -633,6 +725,7 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
     // marker) -- looked exactly like "the gun did nothing" for that weapon.
     events.push({ type: 'shot', playerId: p.id, weapon: weaponId })
     p.cooldownUntil = now + 1 / weapon.rof
+    p.spawnProtectedUntil = 0
     return
   }
 
@@ -648,9 +741,20 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
   } else {
     p.cooldownUntil = now + 1 / weapon.rof
   }
-  events.push({ type: 'shot', playerId: p.id, weapon: weaponId })
+  // Held rather than pushed inline so the first pellet's raycast below can
+  // fill in `hit` after the fact -- the event has to be in the stream before
+  // any kill it causes, and the impact point isn't known until the ray runs.
+  const shotEvent: Extract<SimEvent, { type: 'shot' }> = {
+    type: 'shot',
+    playerId: p.id,
+    weapon: weaponId,
+  }
+  events.push(shotEvent)
   // Camo breaks on a committed shot (spec §3), not on melee/power-melee/swap/blocked fire.
   p.camoUntil = 0
+  // Same for spawn protection: it is a head start, not a shield to shoot
+  // from behind. Firing gives it up.
+  p.spawnProtectedUntil = 0
 
   const eye = eyePos(p)
   const dir = viewDir(p.yaw, p.pitch)
@@ -665,6 +769,12 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
     for (let i = 0; i < weapon.pellets; i++) {
       const pelletDir = jitterDir(dir, spread, sim)
       const hit = raycast(eye, pelletDir, maxRange, sim.map.boxes, playersArr, p.id)
+      // First ray only: the client places one impact spark per trigger pull,
+      // and a scattergun's 8 pellets would otherwise need 8 wire points.
+      // A first ray that hits nothing leaves `hit` absent.
+      if (i === 0 && hit.kind !== 'none') {
+        shotEvent.hit = add(eye, scale(pelletDir, hit.dist))
+      }
       if (hit.kind === 'player' && hit.playerId) {
         const target = sim.players.get(hit.playerId)
         if (target && target.alive) {
@@ -699,6 +809,42 @@ function stepFire(sim: MatchSim, p: PlayerState, input: PlayerInput, now: number
       if (targetId) projectile.homingTargetId = targetId
     }
     sim.projectiles.push(projectile)
+  }
+}
+
+/**
+ * Map power-weapon pads: an alive player standing on an available pad
+ * swaps the weapon in their ACTIVE slot for the pad's, with a full magazine
+ * and no leftover fire cooldown, and the pad goes down for its respawnSec.
+ * A player already carrying that weapon in either slot walks straight over
+ * it, so a pad is never wasted on a duplicate. Iterates players in Map
+ * insertion order (deterministic) so a contested pad always resolves the
+ * same way. Bots ignore pads for now -- they never path to one, they can
+ * only collect one they happen to walk across.
+ */
+function stepPickups(sim: MatchSim, now: number, events: SimEvent[]): void {
+  const pads = sim.map.powerPickups ?? []
+  if (pads.length === 0) return
+
+  for (const p of sim.players.values()) {
+    if (!p.alive) continue
+    for (let i = 0; i < pads.length; i++) {
+      const pad = pads[i]
+      if (now < (sim.pickupAvailableAt[i] ?? 0)) continue
+      // Flat XZ radius with a loose vertical gate, so a pad reads as a spot
+      // on the floor rather than a sphere you can grab from a ledge above.
+      if (Math.abs(p.pos.y - pad.pos.y) >= 2) continue
+      const dx = p.pos.x - pad.pos.x
+      const dz = p.pos.z - pad.pos.z
+      if (dx * dx + dz * dz > PICKUP_RADIUS * PICKUP_RADIUS) continue
+      if (p.weapons[0] === pad.weapon || p.weapons[1] === pad.weapon) continue
+
+      p.weapons[p.activeWeapon] = pad.weapon
+      p.ammo[p.activeWeapon] = WEAPONS[pad.weapon].magSize
+      p.cooldownUntil = 0
+      events.push({ type: 'pickup', playerId: p.id, weapon: pad.weapon })
+      sim.pickupAvailableAt[i] = now + pad.respawnSec
+    }
   }
 }
 

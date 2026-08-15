@@ -10,9 +10,9 @@ export type ClientMsg =
   | { t: 'ping' }
   | { t: 'create_room' }
   | { t: 'join_room'; code: string }
-  | { t: 'quick_play' }
+  | { t: 'quick_play'; botDifficulty?: 'easy' | 'normal' | 'hard' }
   | { t: 'leave' }
-  | { t: 'start_match' }
+  | { t: 'start_match'; botDifficulty?: 'easy' | 'normal' | 'hard' }
   | { t: 'input'; input: PlayerInput }
   | { t: 'rematch_vote' }
 
@@ -65,6 +65,11 @@ export type ServerMsg =
       scores: [number, number]
       timeLeft: number
       events: SimEvent[]
+      /** Sim phase; absent means 'playing' (older-server tolerance). */
+      phase?: 'warmup' | 'playing' | 'ended'
+      /** Availability of each map powerPickups pad, index-aligned with the
+       * map's powerPickups array; absent when the map has no pads. */
+      pickups?: boolean[]
     }
   | {
       t: 'match_end'
@@ -102,6 +107,8 @@ export interface SnapPlayer {
   grenades: { frag: number; mag: number }
   equipment: EquipmentId | null
   equipmentCharges: number
+  /** True while spawn protection is active; omitted otherwise. */
+  prot?: boolean
 }
 
 export interface SnapProjectile {
@@ -112,7 +119,7 @@ export interface SnapProjectile {
 }
 
 export function toSnapPlayer(p: PlayerState, now: number): SnapPlayer {
-  return {
+  const snap: SnapPlayer = {
     id: p.id,
     team: p.team,
     bot: p.bot,
@@ -133,4 +140,9 @@ export function toSnapPlayer(p: PlayerState, now: number): SnapPlayer {
     equipment: p.equipment,
     equipmentCharges: p.equipmentCharges,
   }
+  // Omitted rather than sent false, like every other optional field here --
+  // protection is on for two seconds after a respawn and off the rest of
+  // the match, so a per-tick `prot: false` on eight players is pure waste.
+  if ((p.spawnProtectedUntil ?? 0) > now) snap.prot = true
+  return snap
 }
