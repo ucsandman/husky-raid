@@ -73,6 +73,20 @@ export interface PlayOpts {
   listener?: { pos: Vec3; yaw: number }
 }
 
+/**
+ * Generated one-shot SFX with no synth recipe -- unlike SoundName, this is
+ * not an exhaustive switch, because there is nothing to fall back to if the
+ * file is missing (see playFileSound()). Kept separate from SoundName so
+ * synth() stays exhaustive over the sounds that DO have a synth fallback.
+ */
+export type FileSoundName = 'match_start_horn' | 'multikill_impact' | 'flag_capture_stinger'
+
+const FILE_SOUND_URLS: Record<FileSoundName, string> = {
+  match_start_horn: '/assets/audio/sfx/match_start_horn.mp3',
+  multikill_impact: '/assets/audio/sfx/multikill_impact.mp3',
+  flag_capture_stinger: '/assets/audio/sfx/flag_capture_stinger.mp3',
+}
+
 /** Beyond this distance a positional sound is inaudible and skipped entirely. */
 const MAX_DISTANCE = 40
 
@@ -97,6 +111,17 @@ class AudioEngine {
   private readonly buffers = new Map<SoundName, AudioBuffer>()
   private volume = 1
 
+  /** URL-keyed cache for fetched/decoded file assets (VO lines owned by
+   * announcer.ts + the FileSoundName SFX above). Absent from both `loaded`
+   * and `failed` = never attempted or still in flight. Kept separate from
+   * `buffers` (the always-present synth set, sized to ALL_SOUND_NAMES) so a
+   * missing or slow-loading file never blocks or replaces the synth
+   * fallback -- playUrl() just returns false and the caller keeps using
+   * whatever it already had. */
+  private readonly urlBuffers = new Map<string, AudioBuffer>()
+  private readonly urlFailed = new Set<string>()
+  private readonly urlLoading = new Set<string>()
+
   /** Idempotent: safe to call from every click handler that might be the
    * first user gesture. Resumes an already-suspended context (e.g. after
    * dispose()) instead of rebuilding the 15 precomputed buffers. */
@@ -117,6 +142,11 @@ class AudioEngine {
     this.master = master
 
     for (const name of ALL_SOUND_NAMES) this.buffers.set(name, synth(ctx, name))
+
+    // Warm the cache for the three generated SFX that have no synth
+    // fallback, so they're likely ready by the time a call site actually
+    // needs one (match start, a multikill, a flag capture).
+    for (const url of Object.values(FILE_SOUND_URLS)) this.loadUrl(url)
   }
 
   /** Wired to settings.volume (state.ts, persisted to localStorage). */
@@ -126,12 +156,68 @@ class AudioEngine {
   }
 
   play(name: SoundName, opts?: PlayOpts): void {
+    const buffer = this.buffers.get(name)
+    if (!buffer) return
+    this.playBuffer(buffer, opts)
+  }
+
+  /** Fetch+decode `url` in the background if it hasn't been tried yet
+   * (idempotent -- safe to call every frame). Never throws, never logs: a
+   * missing or corrupt file just leaves playUrl() returning false forever,
+   * which is the entire fallback contract. No-ops before init() has run. */
+  private loadUrl(url: string): void {
+    const ctx = this.ctx
+    if (!ctx || this.urlBuffers.has(url) || this.urlFailed.has(url) || this.urlLoading.has(url)) return
+    this.urlLoading.add(url)
+    fetch(url)
+      .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
+      .then((data) => ctx.decodeAudioData(data))
+      .then((buffer) => {
+        this.urlBuffers.set(url, buffer)
+      })
+      .catch(() => {
+        this.urlFailed.add(url)
+      })
+      .finally(() => {
+        this.urlLoading.delete(url)
+      })
+  }
+
+  /** Public entry point to warm the cache for a file this engine doesn't
+   * otherwise know about (announcer.ts's VO lines) without playing it.
+   * Called once per bark from announcer.init(). */
+  preloadUrl(url: string): void {
+    this.loadUrl(url)
+  }
+
+  /**
+   * Plays `url`'s buffer and returns true if it was already loaded.
+   * Otherwise kicks off (or leaves running) a background load for next
+   * time and returns false -- callers use the return value to decide
+   * whether to fall back to their own synth sound or speech synthesis.
+   */
+  playUrl(url: string, opts?: PlayOpts): boolean {
+    const buffer = this.urlBuffers.get(url)
+    if (!buffer) {
+      this.loadUrl(url)
+      return false
+    }
+    this.playBuffer(buffer, opts)
+    return true
+  }
+
+  /** Generated SFX with no synth recipe (see FileSoundName above). Silently
+   * does nothing if the file hasn't finished loading yet or failed to load
+   * -- there is no fallback sound to drop to for these three. */
+  playFileSound(name: FileSoundName, opts?: PlayOpts): void {
+    this.playUrl(FILE_SOUND_URLS[name], opts)
+  }
+
+  private playBuffer(buffer: AudioBuffer, opts?: PlayOpts): void {
     const ctx = this.ctx
     const master = this.master
     if (!ctx || !master) return
     if (ctx.state === 'suspended') void ctx.resume()
-    const buffer = this.buffers.get(name)
-    if (!buffer) return
 
     const src = ctx.createBufferSource()
     src.buffer = buffer

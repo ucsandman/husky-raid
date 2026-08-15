@@ -12,7 +12,14 @@
  * `speak()` to prefer `src` over `speechSynthesis`; no call site changes.
  * That is the whole reason the vocabulary is a data table and not a pile of
  * string literals at the point of use.
+ *
+ * Every bark below now has a generated `src`, played through audioEngine's
+ * WebAudio graph (playUrl) so it's volume/mute-linked the same way as every
+ * other sound. speechSynthesis is the fallback for whichever bark's file
+ * hasn't finished loading yet (or failed to load) at the moment it fires --
+ * never a hard requirement.
  */
+import { audioEngine, type FileSoundName } from './audio'
 
 export type BarkId =
   | 'match_start'
@@ -41,40 +48,67 @@ interface Bark {
   text: string
   /** Higher wins when two barks land in the same breath. */
   priority: number
-  /** Unset today. Point at a generated VO file to replace the synth voice. */
+  /** Generated VO file, preferred over speechSynthesis when loaded (see speak()). */
   src?: string
 }
 
 const BARKS: Record<BarkId, Bark> = {
-  match_start: { text: 'Fight!', priority: 5 },
+  match_start: { text: 'Fight!', priority: 5, src: '/assets/audio/voice/match_start.mp3' },
 
   // Multikill ladder -- kills inside MULTIKILL_WINDOW of each other.
-  double_kill: { text: 'Double kill', priority: 6 },
-  triple_kill: { text: 'Triple kill', priority: 7 },
-  overkill: { text: 'Overkill', priority: 8 },
-  killtacular: { text: 'Killtacular', priority: 9 },
+  double_kill: { text: 'Double kill', priority: 6, src: '/assets/audio/voice/double_kill.mp3' },
+  triple_kill: { text: 'Triple kill', priority: 7, src: '/assets/audio/voice/triple_kill.mp3' },
+  overkill: { text: 'Overkill', priority: 8, src: '/assets/audio/voice/overkill.mp3' },
+  killtacular: { text: 'Killtacular', priority: 9, src: '/assets/audio/voice/killtacular.mp3' },
 
   // Spree ladder -- kills without dying. Halo's own 5/10/15 thresholds.
-  killing_spree: { text: 'Killing spree', priority: 4 },
-  killing_frenzy: { text: 'Killing frenzy', priority: 6 },
-  running_riot: { text: 'Running riot', priority: 8 },
+  killing_spree: { text: 'Killing spree', priority: 4, src: '/assets/audio/voice/killing_spree.mp3' },
+  killing_frenzy: { text: 'Killing frenzy', priority: 6, src: '/assets/audio/voice/killing_frenzy.mp3' },
+  running_riot: { text: 'Running riot', priority: 8, src: '/assets/audio/voice/running_riot.mp3' },
 
-  backsmack: { text: 'Assassination', priority: 7 },
+  backsmack: { text: 'Assassination', priority: 7, src: '/assets/audio/voice/backsmack.mp3' },
 
-  flag_taken_by_us: { text: 'Enemy flag taken', priority: 5 },
-  flag_taken_by_them: { text: 'Your flag has been taken', priority: 6 },
-  flag_dropped_ours: { text: 'Your flag has been dropped', priority: 4 },
-  flag_dropped_theirs: { text: 'Enemy flag dropped', priority: 3 },
-  flag_returned_ours: { text: 'Your flag has been returned', priority: 4 },
-  flag_returned_theirs: { text: 'Enemy flag returned', priority: 3 },
+  flag_taken_by_us: { text: 'Enemy flag taken', priority: 5, src: '/assets/audio/voice/flag_taken_by_us.mp3' },
+  flag_taken_by_them: {
+    text: 'Your flag has been taken',
+    priority: 6,
+    src: '/assets/audio/voice/flag_taken_by_them.mp3',
+  },
+  flag_dropped_ours: {
+    text: 'Your flag has been dropped',
+    priority: 4,
+    src: '/assets/audio/voice/flag_dropped_ours.mp3',
+  },
+  flag_dropped_theirs: { text: 'Enemy flag dropped', priority: 3, src: '/assets/audio/voice/flag_dropped_theirs.mp3' },
+  flag_returned_ours: {
+    text: 'Your flag has been returned',
+    priority: 4,
+    src: '/assets/audio/voice/flag_returned_ours.mp3',
+  },
+  flag_returned_theirs: {
+    text: 'Enemy flag returned',
+    priority: 3,
+    src: '/assets/audio/voice/flag_returned_theirs.mp3',
+  },
 
-  we_scored: { text: 'Score!', priority: 7 },
-  they_scored: { text: 'Enemy scores', priority: 7 },
-  lead_taken: { text: 'You have taken the lead', priority: 5 },
-  lead_lost: { text: 'You have lost the lead', priority: 5 },
+  we_scored: { text: 'Score!', priority: 7, src: '/assets/audio/voice/we_scored.mp3' },
+  they_scored: { text: 'Enemy scores', priority: 7, src: '/assets/audio/voice/they_scored.mp3' },
+  lead_taken: { text: 'You have taken the lead', priority: 5, src: '/assets/audio/voice/lead_taken.mp3' },
+  lead_lost: { text: 'You have lost the lead', priority: 5, src: '/assets/audio/voice/lead_lost.mp3' },
 
-  victory: { text: 'Victory', priority: 10 },
-  defeat: { text: 'Defeat', priority: 10 },
+  victory: { text: 'Victory', priority: 10, src: '/assets/audio/voice/victory.mp3' },
+  defeat: { text: 'Defeat', priority: 10, src: '/assets/audio/voice/defeat.mp3' },
+}
+
+/** Bark ids that also layer a one-shot SFX (no synth recipe -- see
+ * audio.ts's FileSoundName) on top of their VO line. match_start has no
+ * existing synth cue at all; we_scored/they_scored already get game.ts's
+ * 'capture' chime, so this is a bigger payoff stacked on top of it, not a
+ * replacement. */
+const BARK_SFX: Partial<Record<BarkId, FileSoundName>> = {
+  match_start: 'match_start_horn',
+  we_scored: 'flag_capture_stinger',
+  they_scored: 'flag_capture_stinger',
 }
 
 /** Minimum gap between two spoken lines. Without it a double kill that also
@@ -104,9 +138,23 @@ class Announcer {
   private lastSpokeAt = -Infinity
   private lastPriority = 0
 
-  /** Must run inside a user gesture, alongside audioEngine.init(). Safe to
-   * call repeatedly. Silently does nothing where the API is absent. */
+  /** Guards the VO preload below so it only ever runs once, independent of
+   * `unlocked` (which tracks speechSynthesis specifically and can stay
+   * false forever on a browser without it). */
+  private voPreloaded = false
+
+  /** Must run inside a user gesture, alongside audioEngine.init() (which it
+   * assumes has already run -- main.ts calls them back to back on the same
+   * gesture). Safe to call repeatedly. Silently does nothing where the
+   * speechSynthesis API is absent; VO preload doesn't need it. */
   init(): void {
+    if (!this.voPreloaded) {
+      this.voPreloaded = true
+      for (const bark of Object.values(BARKS)) {
+        if (bark.src) audioEngine.preloadUrl(bark.src)
+      }
+    }
+
     if (this.unlocked) return
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
     this.synth = window.speechSynthesis
@@ -149,7 +197,7 @@ class Announcer {
   }
 
   speak(id: BarkId): void {
-    if (!this.synth || this.volume <= 0) return
+    if (this.volume <= 0) return
     const bark = BARKS[id]
     if (!bark) return
 
@@ -157,14 +205,22 @@ class Announcer {
     const sinceLast = now - this.lastSpokeAt
     // Inside the gap, only a strictly more important line may interrupt.
     if (sinceLast < MIN_GAP && bark.priority <= this.lastPriority) return
-    if (sinceLast < MIN_GAP) this.synth.cancel()
+    if (sinceLast < MIN_GAP) this.synth?.cancel()
 
-    const utter = new SpeechSynthesisUtterance(bark.text)
-    if (this.voice) utter.voice = this.voice
-    utter.volume = this.volume
-    utter.rate = 1.05
-    utter.pitch = 0.8
-    this.synth.speak(utter)
+    // Prefer the generated VO file; speechSynthesis is the fallback for
+    // whichever bark hasn't finished loading (or failed to load) yet.
+    const playedFile = bark.src ? audioEngine.playUrl(bark.src) : false
+    if (!playedFile && this.synth) {
+      const utter = new SpeechSynthesisUtterance(bark.text)
+      if (this.voice) utter.voice = this.voice
+      utter.volume = this.volume
+      utter.rate = 1.05
+      utter.pitch = 0.8
+      this.synth.speak(utter)
+    }
+
+    const sfx = BARK_SFX[id]
+    if (sfx) audioEngine.playFileSound(sfx)
 
     this.lastSpokeAt = now
     this.lastPriority = bark.priority

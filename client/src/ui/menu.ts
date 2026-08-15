@@ -116,10 +116,12 @@ function renderStatusBar(state: ClientState, onReconnect: () => void): HTMLEleme
 
 function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
   const screen = el('div', 'screen screen--menu')
-  const card = el('div', 'card')
+  const frame = el('div', 'arena-frame')
 
-  card.appendChild(el('h1', 'title', 'RIFTLANE'))
-  card.appendChild(el('p', 'subtitle', 'arena FPS · capture the flag'))
+  const hero = el('div', 'arena-hero')
+  hero.appendChild(el('div', 'arena-hero-accent'))
+  hero.appendChild(renderTitle())
+  hero.appendChild(el('p', 'subtitle', 'arena FPS · capture the flag'))
 
   const nameRow = el('div', 'field')
   const nameLabel = el('label', 'field-label', 'Callsign')
@@ -137,7 +139,7 @@ function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
     store.set({ settings })
   })
   nameRow.appendChild(nameInput)
-  card.appendChild(nameRow)
+  hero.appendChild(nameRow)
 
   const actions = el('div', 'actions')
   // Every action below needs a live socket -- without one the send is
@@ -145,7 +147,7 @@ function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
   // the status bar explain why.
   const offline = state.connectionStatus !== 'open'
 
-  const quickPlayBtn = el('button', 'btn btn--primary', 'Quick Play')
+  const quickPlayBtn = el('button', 'btn btn--primary btn--hero', 'Quick Play')
   quickPlayBtn.disabled = offline
   quickPlayBtn.addEventListener('click', () => send({ t: 'quick_play' }))
   actions.appendChild(quickPlayBtn)
@@ -174,16 +176,43 @@ function renderMenuScreen(state: ClientState, send: Send): HTMLElement {
   joinRow.append(codeInput, joinBtn)
   actions.appendChild(joinRow)
 
-  card.appendChild(actions)
-  card.appendChild(renderControlsPanel())
-  card.appendChild(renderSettingsPanel(state))
+  hero.appendChild(actions)
+  frame.appendChild(hero)
 
-  screen.appendChild(card)
+  // CONTROLS and SETTINGS are their own framed panels, not nested inside
+  // the hero card, so the primary Quick Play action keeps a single clear
+  // focal point and the reference material stays visually secondary.
+  const panels = el('div', 'arena-panels')
+  panels.appendChild(renderControlsPanel())
+  panels.appendChild(renderSettingsPanel(state))
+  frame.appendChild(panels)
+
+  screen.appendChild(frame)
   return screen
 }
 
+/** Wordmark logo as the hero title. The <h1> keeps heading semantics and
+ * the <img alt> keeps the accessible name; if the asset 404s the image is
+ * swapped for the plain text title so sighted users never see a broken
+ * image icon instead of the game's name. */
+function renderTitle(): HTMLElement {
+  const heading = el('h1', 'title')
+  const logo = document.createElement('img')
+  logo.className = 'logo'
+  logo.src = '/assets/ui/riftlane-logo.png'
+  logo.alt = 'RIFTLANE'
+  logo.width = 1400
+  logo.height = 763
+  logo.addEventListener('error', () => {
+    logo.remove()
+    heading.textContent = 'RIFTLANE'
+  })
+  heading.appendChild(logo)
+  return heading
+}
+
 function renderControlsPanel(): HTMLElement {
-  const panel = el('div', 'controls-panel')
+  const panel = el('div', 'controls-panel arena-subpanel')
   panel.appendChild(el('h2', 'panel-heading', 'CONTROLS'))
   const grid = el('div', 'controls-grid')
   for (const [key, action] of CONTROLS) {
@@ -195,7 +224,7 @@ function renderControlsPanel(): HTMLElement {
 }
 
 function renderSettingsPanel(state: ClientState): HTMLElement {
-  const panel = el('div', 'settings-panel')
+  const panel = el('div', 'settings-panel arena-subpanel')
   panel.appendChild(el('h2', 'panel-heading', 'SETTINGS'))
 
   const sensRow = el('div', 'field field--slider')

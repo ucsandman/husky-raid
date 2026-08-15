@@ -292,8 +292,12 @@ export class MaterialLibrary {
     })
   )
 
+  // Darkened from 0x161a33 -- that sat within ~15-20/255 luminance of
+  // SKY_ZENITH/SKY_HIGH above, so the tower/island silhouettes barely
+  // separated from the sky dome behind them. Pushed well below SKY_ZENITH
+  // so the ring/island read stays a skyline, not a smudge.
   readonly backdrop = this.track(
-    new THREE.MeshStandardMaterial({ color: 0x161a33, roughness: 0.95, metalness: 0.1, fog: true })
+    new THREE.MeshStandardMaterial({ color: 0x04050c, roughness: 0.95, metalness: 0.1, fog: true })
   )
 
   private readonly teamHullMats = new Map<Team, THREE.MeshStandardMaterial>()

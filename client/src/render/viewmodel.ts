@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import type { WeaponId } from '@riftlane/shared'
 import { WEAPONS } from '@riftlane/shared'
 import type { MaterialLibrary } from './materials'
@@ -118,6 +119,86 @@ function bladeParts(): Parts {
   return p
 }
 
+// ---- generated asset: triad_rifle only ------------------------------------
+//
+// A Tripo image-to-3D generation produced a single-mesh GLB matching the
+// triad_rifle's non-compact rifle silhouette (concept ref: a cobalt/gunmetal
+// bullpup, cyan accent). Loaded async and swapped in on top of the
+// procedural body; the procedural meshes stay in the group (hidden, not
+// disposed) as the permanent fallback if the load ever fails.
+const RIFLE_GLB_URL = '/assets/models/viewmodel-rifle.glb'
+// Authored with muzzle at local +Z (measured from the source mesh), the
+// opposite of this rig's -Z convention, so a 180deg yaw corrects it.
+// 0.85 (matching the procedural rifle's raw bounding box) rendered far
+// too large in-game -- the generated mesh reads bulkier per-unit than the
+// boxy procedural build. 0.42 undershot the other way and left the weapon
+// floating unanchored mid-frame; this is tuned from a measured, not
+// guessed, in-game screenshot to fill the frame like the procedural rifle.
+const RIFLE_GLB_SCALE = 0.6
+// Nudges the scaled model down/right/forward in group-local space so the
+// stock exits the bottom-right of frame like a held weapon, matching where
+// the procedural rifle sits, instead of floating centered like a dropped
+// prop.
+const RIFLE_GLB_OFFSET = new THREE.Vector3(0.07, -0.07, 0.08)
+
+let riflePromise: Promise<THREE.Object3D> | null = null
+function loadRifleModel(): Promise<THREE.Object3D> {
+  if (!riflePromise) {
+    riflePromise = new GLTFLoader().loadAsync(RIFLE_GLB_URL).then((gltf) => gltf.scene)
+  }
+  return riflePromise
+}
+
+/** Swaps the generated rifle in once it loads; leaves the procedural body
+ * (and this rifle's own flare/tip, repositioned to its muzzle) untouched on
+ * failure. `procedural` are hidden rather than disposed -- teardown()'s
+ * scene walk still frees them same as everything else in the group. */
+function attachGeneratedRifle(
+  procedural: THREE.Object3D[],
+  flare: THREE.Mesh,
+  tip: THREE.Mesh,
+  group: THREE.Group
+): void {
+  loadRifleModel()
+    .then((template) => {
+      // The match can end (or the weapon can rotate out) while this load is
+      // still in flight -- group loses its parent on teardown and on weapon
+      // swap, so an orphaned group has nowhere left to attach the clone.
+      if (!group.parent) return
+
+      const model = template.clone(true)
+      model.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          // Per-instance clone so a rematch's disposeObject3D() pass never
+          // frees the shared template material out from under it.
+          child.material = (child.material as THREE.MeshStandardMaterial).clone()
+        }
+      })
+      model.rotation.y = Math.PI
+      model.scale.setScalar(RIFLE_GLB_SCALE)
+      model.position.copy(RIFLE_GLB_OFFSET)
+
+      // Measure the muzzle off the model AFTER the yaw + scale + offset
+      // above, while it's still unparented -- Box3.setFromObject() then
+      // reads model.matrixWorld as just its own local matrix, landing the
+      // box in group-local units (the same space tip/flare already live
+      // in as direct children of group). The barrel points down this rig's
+      // -Z, so the muzzle is the box's -Z extreme; x/y come from the box
+      // center since a per-axis min/max corner isn't a real point on the
+      // mesh.
+      const box = new THREE.Box3().setFromObject(model)
+      const muzzle = new THREE.Vector3((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2, box.min.z)
+
+      group.add(model)
+      for (const mesh of procedural) mesh.visible = false
+      flare.position.set(muzzle.x, muzzle.y, muzzle.z - 0.02)
+      tip.position.copy(muzzle)
+    })
+    .catch((err) => {
+      console.warn('[viewmodel] generated triad_rifle model failed to load, keeping procedural', err)
+    })
+}
+
 /**
  * Authored first-person weapon, one of three families keyed off
  * WeaponDef.kind so all ten ids read as distinct hardware without ten
@@ -194,6 +275,11 @@ export function buildViewmodel(id: WeaponId, lib: MaterialLibrary): THREE.Group 
 
   group.userData.flare = flare
   group.scale.setScalar(0.8)
+
+  if (id === 'triad_rifle') {
+    attachGeneratedRifle([shell, metal, glow].filter((m): m is THREE.Mesh => m !== null), flare, tip, group)
+  }
+
   return group
 }
 

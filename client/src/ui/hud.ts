@@ -520,7 +520,12 @@ export class Hud {
     this.killStreakRemaining = KILL_STREAK_WINDOW
     // The banner's counter is the single source of truth for multikills; the
     // announcer reads it rather than running a second window of its own.
-    announcer.multikill(this.killStreakCount)
+    // Mirrors game.ts's onLocalKill()/spree pairing: a bark on the ladder
+    // also gets a matching SFX layer.
+    const bark = announcer.multikill(this.killStreakCount)
+    if (bark === 'double_kill' || bark === 'triple_kill' || bark === 'overkill' || bark === 'killtacular') {
+      audioEngine.playFileSound('multikill_impact')
+    }
 
     this.killBannerTitle.textContent = `ELIMINATED ${victimName}${head ? ' — HEADSHOT' : ''}`
     this.killBannerStreak.textContent = KILL_STREAK_LABEL[this.killStreakCount] ?? (this.killStreakCount >= 4 ? `${this.killStreakCount}x ELIMINATION STREAK` : '')

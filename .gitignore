@@ -1,5 +1,10 @@
 node_modules/
 dist/
 .env
+# AI-generation intermediates too heavy for git -- the task JSON kept in
+# assets/models/*/ holds the Tripo task id to re-download the raw GLB, and
+# the runtime copy ships from client/public/assets/models/.
+assets/models/**/*-pbr_model.glb
+assets/concepts/viewmodel-rifle-ref.png
 .dashclaw-local/
 .offlocal/

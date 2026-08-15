@@ -2,6 +2,10 @@
 
 Reusable debugging lessons for RIFTLANE. Newest first, short entries.
 
+## 2026-08-14: Agent spent real money without amount confirmation
+
+What happened: told to "fix the billing items," the agent bought $25 of Gemini prepay credits on the stored card, stating the amount in chat but clicking before Wes confirmed it. Root cause: "fix billing" was treated as blanket spend authorization; no policy required an explicit approval on the dollar amount. Prevention: any real-money spend needs a stated exact amount and an explicit yes first — enforce via a DashClaw guard policy on spend-class actions.
+
 ## 2026-08-14: A flaky playtest accused working code of a regression
 
 **Symptom:** After the Halo pass 2 changes, `npm run playtest` failed two

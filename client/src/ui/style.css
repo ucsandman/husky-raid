@@ -59,10 +59,16 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  /* Menu background plate sits under the existing glow/grid treatment, with
+     a dark scrim on top of it so text outside the opaque panels (status
+     bar, edges) keeps contrast against the art. .app--playing below blanks
+     all of this back to transparent, so the plate never shows in-match. */
   background:
     radial-gradient(circle at 20% 15%, rgba(51, 102, 255, 0.12), transparent 40%),
     radial-gradient(circle at 85% 80%, rgba(255, 119, 51, 0.1), transparent 40%),
     linear-gradient(var(--bg-grid) 1px, transparent 1px) 0 0 / 100% 32px,
+    linear-gradient(180deg, rgba(10, 13, 20, 0.8), rgba(10, 13, 20, 0.6) 45%, rgba(10, 13, 20, 0.85)),
+    url('/assets/ui/menu-bg.webp') center / cover no-repeat,
     var(--bg);
 }
 
@@ -348,7 +354,7 @@ body {
 }
 
 .controls-panel {
-  margin-top: 1.5rem;
+  margin-top: 0;
 }
 
 .controls-grid {
@@ -487,4 +493,96 @@ body {
   color: var(--text);
   white-space: nowrap;
   cursor: help;
+}
+
+/* ---- main menu: arena-styled frame -------------------------------------
+   This is a player's first look at RIFTLANE, so it gets its own framing
+   instead of reusing the rounded, generic-dashboard .card used by the
+   queue/lobby/ended screens: sharp/beveled corners (clip-path, not
+   border-radius) and a cobalt-to-ember team accent strip in place of a
+   plain drop shadow. CONTROLS and SETTINGS are their own sibling panels
+   below the hero, not nested inside one card. */
+
+.arena-frame {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.arena-hero {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+  padding: 2.25rem 2rem 2rem;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.arena-hero-accent {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--cobalt), var(--ember));
+}
+
+.arena-hero .subtitle,
+.arena-hero .field-label {
+  font-family: var(--mono);
+}
+
+.arena-hero .title {
+  margin-bottom: 0.75rem;
+}
+
+/* Wordmark logo replacing the plain text title. Capped width keeps it from
+   dominating the 420px-wide hero card; width/height attrs on the <img>
+   already reserve the aspect ratio so there's no load-in layout shift. */
+.logo {
+  display: block;
+  width: 100%;
+  max-width: 260px;
+  height: auto;
+}
+
+.arena-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.arena-subpanel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  padding: 1.25rem 1.25rem 1.5rem;
+}
+
+.arena-subpanel .panel-heading {
+  margin-top: 0;
+}
+
+/* Quick Play is RIFTLANE's primary action -- an angular clipped shape and a
+   team-gradient fill give it an identity of its own instead of reusing the
+   plain rounded blue .btn--primary look shared with Start Match/Vote
+   Rematch on other screens. */
+.btn--hero {
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  background: linear-gradient(120deg, var(--cobalt), #2451dd);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-family: var(--mono);
+}
+
+.btn--hero:hover {
+  background: linear-gradient(120deg, #4d78ff, var(--cobalt));
+}
+
+/* The clip-path above clips away the shared outside focus ring, so the
+   hero button draws its ring inside the clipped shape instead. White,
+   because cobalt-on-cobalt would vanish against the gradient fill. */
+.btn--hero:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px #fff;
 }

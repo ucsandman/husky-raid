@@ -16,7 +16,10 @@ const NEAR = 0.05
 const FAR = 500
 const FOG_NEAR = 34
 const FOG_FAR = 260
-const EXPOSURE = 1.15
+// Bumped from 1.15 -- measured median scene luminance was 10/255 with 77% of
+// pixels under 20/255, crushing the authored world kit toward black outside
+// direct sun hits. Raised alongside the hemisphere/bounce intensities below.
+const EXPOSURE = 1.55
 const SHADOW_EXTENT = 46
 const NARROW_VIEWPORT = 760
 
@@ -94,7 +97,11 @@ export function createScene(canvas: HTMLCanvasElement): SceneCtx {
   camera.position.set(0, EYE_HEIGHT, 0)
   scene.add(camera)
 
-  const hemi = new THREE.HemisphereLight(0x8ea6f0, 0x2b2036, 1.05)
+  // Ground color lightened from 0x2b2036 and intensity raised from 1.05 --
+  // that dark ground tone set the luminance floor for anything not directly
+  // sun-hit (shadowed soldier limbs, backdrop, cover), and it was reading
+  // as near-black. See the EXPOSURE comment above for the measurement.
+  const hemi = new THREE.HemisphereLight(0x8ea6f0, 0x453a5c, 1.35)
   scene.add(hemi)
 
   const sun = new THREE.DirectionalLight(0xffd9b4, 2.3)
@@ -112,7 +119,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneCtx {
   scene.add(sun)
   scene.add(sun.target)
 
-  const bounce = new THREE.DirectionalLight(0x6f8fff, 0.75)
+  const bounce = new THREE.DirectionalLight(0x6f8fff, 1.1)
   bounce.position.set(-34, 20, 42)
   scene.add(bounce)
 

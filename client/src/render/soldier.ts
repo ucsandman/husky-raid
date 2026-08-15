@@ -179,8 +179,14 @@ export function makeSoldier(team: Team, lib: MaterialLibrary): THREE.Group {
     metalness: 0.1,
     transparent: true,
   })
+  // Same emissive-floor trick as armorMat above: legs and arms route mostly
+  // through hull, and the helmet dome is plate -- without a floor those parts
+  // of the silhouette go black in shadow and the soldier reads as a floating
+  // torso.
   const hullMat = new THREE.MeshStandardMaterial({
     color: 0x3a4356,
+    emissive: 0x3a4356,
+    emissiveIntensity: 0.2,
     map: lib.panelTex,
     roughness: 0.68,
     metalness: 0.15,
@@ -188,6 +194,8 @@ export function makeSoldier(team: Team, lib: MaterialLibrary): THREE.Group {
   })
   const plateMat = new THREE.MeshStandardMaterial({
     color: 0xa9b6cc,
+    emissive: 0xa9b6cc,
+    emissiveIntensity: 0.18,
     roughness: 0.42,
     metalness: 0.6,
     transparent: true,

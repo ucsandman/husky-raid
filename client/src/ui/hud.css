@@ -475,6 +475,11 @@
 .hud-weapon-ammo {
   font-size: 0.95rem;
   font-weight: 700;
+  /* Sized to fit "RELOADING" (the widest string this element shows) so the
+     right-anchored loadout row's left edge/border box stays put when ammo
+     swaps between a number and the reload text mid-combat. */
+  min-width: 5rem;
+  text-align: right;
 }
 
 /* Mid-reload: the trigger is genuinely locked out, so the readout says so
@@ -574,6 +579,12 @@
   border: 1px solid var(--border);
   font-size: 0.78rem;
   white-space: nowrap;
+  /* A long killer+weapon+victim line is a nowrap flex child: without this it
+     won't shrink below its content width and spills leftward past the
+     320px-capped .hud-killfeed toward screen center. Truncate instead. */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   opacity: 1;
   animation: hud-kill-fade 4s ease forwards;
 }
@@ -589,6 +600,17 @@
   }
   100% {
     opacity: 0;
+  }
+}
+
+/* Under ~800px the killfeed's left edge (100% - 1.25rem - 320px) crosses
+   the centered scorestrip's right edge (50% + ~60px), so the two top
+   clusters print through each other. Drop the feed below the strip and
+   tighten it instead of letting them share the top row. */
+@media (max-width: 800px) {
+  .hud-killfeed {
+    top: 3.4rem;
+    max-width: 240px;
   }
 }
 
@@ -897,9 +919,13 @@
 }
 
 /* ---- transient callouts (flag chain, lead change) ---------------------- */
+/* Offset below .hud-kill-banner (top: 22%) on purpose -- a kill, a flag
+   chain, and a lead change can all fire within the same couple of seconds
+   in CTF, and hud.ts never coordinates the two. Different band keeps them
+   from rendering as two stacked lines of centered text. */
 .hud-callout {
   position: absolute;
-  top: 22%;
+  top: 33%;
   left: 50%;
   transform: translateX(-50%);
   padding: 0.3rem 0.9rem;
@@ -972,5 +998,57 @@
     100% {
       opacity: 0;
     }
+  }
+}
+
+/* ---- narrow viewport: bottom cluster no longer has three panels sharing
+   one row ----------------------------------------------------------------
+   .hud-vitals (bottom-left, 220px), .hud-tracker (bottom-center, 132px) and
+   .hud-loadout (bottom-right, content-width) all pin to bottom: 1.25rem
+   with no size budget for a phone-width viewport -- their computed spans
+   overlap directly under ~520px. Shrink the two fixed-size clusters, lift
+   the tracker out of the shared row entirely, and respect the safe-area
+   inset (see index.html's viewport-fit=cover) so none of the three sit
+   under a notch/home-indicator. The max-height arm covers landscape
+   phones (e.g. 844x390) -- the orientation an FPS is actually played in,
+   and where the side notch inset matters -- scoped to coarse pointers so
+   short desktop windows keep the full-size HUD. */
+@media (max-width: 520px), (max-height: 520px) and (pointer: coarse) {
+  .hud-vitals {
+    width: 168px;
+    left: calc(0.6rem + env(safe-area-inset-left, 0px));
+    bottom: calc(0.6rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .hud-tracker {
+    width: 92px;
+    height: 92px;
+    bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .hud-loadout {
+    right: calc(0.6rem + env(safe-area-inset-right, 0px));
+    bottom: calc(0.6rem + env(safe-area-inset-bottom, 0px));
+    gap: 0.3rem;
+  }
+
+  .hud-weapon-row {
+    padding: 0.2rem 0.45rem;
+    gap: 0.35rem;
+    font-size: 0.68rem;
+  }
+
+  .hud-weapon-ammo {
+    font-size: 0.8rem;
+    min-width: 4.2rem;
+  }
+
+  .hud-chips {
+    gap: 0.3rem;
+  }
+
+  .hud-chip {
+    width: 22px;
+    height: 22px;
   }
 }

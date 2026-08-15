@@ -98,6 +98,20 @@ It drives a live match against real bots, so it is not perfectly deterministic. 
 
 The integration suite (`server/test/integration.test.ts`) boots a real server on an ephemeral port and drives it with real WebSocket clients, proving the snapshot stream, input ack, mid-match disconnect/bot-swap, and clean shutdown all work over real sockets. It doesn't exercise captures or the rest of match logic -- that's covered by the sim unit tests plus manual playtest.
 
+## Asset generation keys (optional)
+
+The game builds and runs with no environment variables. The keys in `.env.example` are only for regenerating AI-produced assets (announcer voice lines and stingers live in `client/public/assets/audio/`) with local tooling:
+
+```bash
+cp .env.example .env   # then fill in real keys
+```
+
+- `ELEVENLABS_API_KEY` -- announcer VO and SFX generation
+- `GEMINI_API_KEY` -- 2D art references (logo, menu backgrounds)
+- `TRIPO_API_KEY` -- 3D model generation
+
+`.env` is gitignored; keys never ship to the client. If a generated audio file is missing at runtime, the announcer falls back to speech synthesis and the game keeps working.
+
 ## Project structure
 
 ```

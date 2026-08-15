@@ -50,6 +50,7 @@ const LANDING_FALL_VEL = -4.5 // m/s downward velocity that counts as "falling"
 const LANDING_SETTLE_VEL = 0.6 // |vel.y| this small right after a fast fall means the fall was arrested
 const LANDING_TRAUMA = 0.25
 const DAMAGE_TRAUMA = 0.45
+const KILL_CONFIRM_TRAUMA = 0.18 // small punch on a confirmed local kill, below DAMAGE_TRAUMA
 const EXPLOSION_TRAUMA_MAX = 0.75
 const EXPLOSION_TRAUMA_RADIUS = 9 // meters -- cosmetic shake falloff only, not the sim's real splash radius
 const DAMAGE_ATTRIBUTION_RADIUS = 10 // meters -- "plausible source" radius for the damage-direction indicator
@@ -284,7 +285,7 @@ export class Game {
     if (!prevSnap || !this.localId) return
     const prevLocal = prevSnap.players.find((p) => p.id === this.localId)
     const curLocal = msg.players.find((p) => p.id === this.localId)
-    if (!prevLocal || !curLocal || !curLocal.alive) return
+    if (!prevLocal || !curLocal || !prevLocal.alive) return
     if (curLocal.shield + curLocal.health >= prevLocal.shield + prevLocal.health - 0.01) return
 
     this.shakeRig.addTrauma(DAMAGE_TRAUMA)
@@ -558,6 +559,8 @@ export class Game {
               const falloff = 1 - dist / EXPLOSION_TRAUMA_RADIUS
               this.shakeRig.addTrauma(EXPLOSION_TRAUMA_MAX * falloff * falloff)
             }
+          } else if (ev.type === 'kill' && ev.killerId === this.localId && ev.killerId !== ev.victimId) {
+            this.shakeRig.addTrauma(KILL_CONFIRM_TRAUMA)
           }
         }
         this.updateViewmodel(localSnap, dt, scoped)
