@@ -124,8 +124,21 @@ function reprojectMovement(
   return { forward: dot(worldDir, forwardVecOf(finalYaw)), strafe: dot(worldDir, rightVecOf(finalYaw)) }
 }
 
+/**
+ * How well `id` suits a fight at `dist`, 0 (useless) to 3 (ideal).
+ *
+ * The out-of-range rules are bug fixes, not preferences: a weapon whose
+ * WeaponDef.maxRange falls short of the engagement cannot reach the target
+ * at all, and every such weapon used to fall through to the generic 1. A bot
+ * holding a 15m Bulldog across a 30m lane scored the same as the rifle in
+ * its other hand, desiredWeaponSlot saw a tie, and the bot kept the shotgun
+ * out and fired into empty air for the rest of the fight.
+ */
 function weaponRangeScore(id: WeaponId, dist: number): number {
   const def = WEAPONS[id]
+  // Hitscan/burst weapons simply cannot hit past their own raycast cap.
+  if (def.maxRange !== undefined && dist > def.maxRange) return 0
+
   if (dist < BRAIN.CLOSE_RANGE) {
     if (def.kind === 'power_melee') return 3
     if (id === 'scattergun') return 2
@@ -133,10 +146,16 @@ function weaponRangeScore(id: WeaponId, dist: number): number {
   }
   if (dist <= BRAIN.LONG_RANGE) {
     if (def.kind === 'power_melee') return 0
+    // Bots cannot lead a target, so the slow arcing Cindershot is their
+    // worst option at any range it can technically reach.
+    if (id === 'cinderlob') return 1
     if (id === 'railspike') return 1
     return 2
   }
-  if (id === 'railspike' || id === 'triad_rifle') return 3
+  // Long. The sidearm and commando join the rifles here because the MA40 is
+  // capped at 45m: without them a bot at 30m ties itself to a gun that has
+  // already fallen out of range and never swaps.
+  if (id === 'railspike' || id === 'triad_rifle' || id === 'commando' || id === 'sidearm') return 3
   if (def.kind === 'power_melee') return 0
   return 1
 }
@@ -395,6 +414,7 @@ export class BotBrain {
         return this.patrolAround(map.flagStands[ourTeam], p, now)
     }
   }
+
 
   /**
    * A wandering point within DEFENDER_PATROL_RADIUS of `center`, re-rolled on

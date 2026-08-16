@@ -382,7 +382,7 @@ export class MatchSim {
         return false
       }
       if (now >= pr.fuseAt) {
-        if (pr.kind === 'boomtube' || pr.kind === 'ion_charge') {
+        if (pr.kind === 'boomtube' || pr.kind === 'cinderlob') {
           explodeProjectile(this, pr, undefined, now, events)
         }
         return false
@@ -558,8 +558,8 @@ function projectileKindForWeapon(id: WeaponId): Projectile['kind'] | null {
       return 'boomtube'
     case 'swarm_pod':
       return 'swarm_dart'
-    case 'ion_charger':
-      return 'ion_charge'
+    case 'cinderlob':
+      return 'cinderlob'
     default:
       return null
   }
@@ -571,8 +571,8 @@ function weaponIdForProjectileKind(kind: Projectile['kind']): string {
       return 'boomtube'
     case 'swarm_dart':
       return 'swarm_pod'
-    case 'ion_charge':
-      return 'ion_charger'
+    case 'cinderlob':
+      return 'cinderlob'
     case 'frag':
       return 'frag'
     case 'mag':
@@ -587,11 +587,13 @@ function doMeleeAttack(
   damage: number,
   weapon: string,
   now: number,
-  events: SimEvent[]
+  events: SimEvent[],
+  aoe = false
 ): void {
   // Melee cone is computed against flat (pitch-ignored) forward -- intentional for v1.
   const forward = viewDir(attacker.yaw, 0)
   const cosHalfCone = Math.cos(MELEE_VIEW_CONE / 2)
+  const inCone: PlayerState[] = []
   let best: PlayerState | null = null
   let bestDist = Infinity
 
@@ -602,6 +604,7 @@ function doMeleeAttack(
     if (dist > range || dist < 1e-6) continue
     const cosAngle = dot(forward, normalize(toTarget))
     if (cosAngle < cosHalfCone) continue
+    inCone.push(target)
     if (dist < bestDist) {
       bestDist = dist
       best = target
@@ -611,6 +614,8 @@ function doMeleeAttack(
   if (!best) return
   // Melee lunge: horizontal-only nudge toward the target, grounded only,
   // vel.y left untouched (no free height from meleeing an airborne target).
+  // Always aimed at the NEAREST target even on an area swing, so a hammer
+  // moves exactly like a sword and only its damage is wider.
   if (attacker.grounded) {
     const d = sub(best.pos, attacker.pos)
     const h = Math.hypot(d.x, d.z)
@@ -624,30 +629,36 @@ function doMeleeAttack(
   // defended itself, which is what makes the flank a read rather than a
   // damage bonus. Power-melee weapons already deal ONE_HIT_KILL_DAMAGE, so
   // this is a no-op for them rather than a special case.
-  const toAttacker = sub(attacker.pos, best.pos)
-  const hAttacker = Math.hypot(toAttacker.x, toAttacker.z)
-  let effectiveDamage = damage
-  let effectiveWeapon = weapon
-  if (hAttacker > 1e-6) {
-    const targetForward = viewDir(best.yaw, 0)
-    const behindness = -dot(targetForward, {
-      x: toAttacker.x / hAttacker,
-      y: 0,
-      z: toAttacker.z / hAttacker,
-    })
-    if (behindness >= Math.cos(BACKSMACK_VIEW_CONE / 2)) {
-      effectiveDamage = ONE_HIT_KILL_DAMAGE
-      // Reported as its own weapon so the kill feed, the kill sound and the
-      // announcer can all tell a backsmack from a normal beatdown without a
-      // new SimEvent field. `weapon` on the kill event is already `string`.
-      effectiveWeapon = 'backsmack'
+  // An area swing (grav_maul) resolves against EVERY target in the cone --
+  // that is the entire difference between a hammer and a shorter, slower
+  // sword. Every other melee resolves against the nearest target alone.
+  for (const victim of aoe ? inCone : [best]) {
+    const toAttacker = sub(attacker.pos, victim.pos)
+    const hAttacker = Math.hypot(toAttacker.x, toAttacker.z)
+    let effectiveDamage = damage
+    let effectiveWeapon = weapon
+    if (hAttacker > 1e-6) {
+      const targetForward = viewDir(victim.yaw, 0)
+      const behindness = -dot(targetForward, {
+        x: toAttacker.x / hAttacker,
+        y: 0,
+        z: toAttacker.z / hAttacker,
+      })
+      if (behindness >= Math.cos(BACKSMACK_VIEW_CONE / 2)) {
+        effectiveDamage = ONE_HIT_KILL_DAMAGE
+        // Reported as its own weapon so the kill feed, the kill sound and the
+        // announcer can all tell a backsmack from a normal beatdown without a
+        // new SimEvent field. `weapon` on the kill event is already `string`.
+        effectiveWeapon = 'backsmack'
+      }
     }
-  }
-  // best was filtered to target.alive above, so applyDamage always starts
-  // from a live target -- no need to snapshot "was alive" before checking.
-  applyDamage(best, effectiveDamage, now)
-  if (!best.alive) {
-    sim.killPlayer(best, now, attacker.id, effectiveWeapon, { ...best.pos }, events)
+    // Every entry in inCone was filtered to target.alive above, so
+    // applyDamage always starts from a live target -- no need to snapshot
+    // "was alive" before checking.
+    applyDamage(victim, effectiveDamage, now)
+    if (!victim.alive) {
+      sim.killPlayer(victim, now, attacker.id, effectiveWeapon, { ...victim.pos }, events)
+    }
   }
 }
 
@@ -695,7 +706,13 @@ function stepFire(
     return
   }
 
-  if (now < p.cooldownUntil) return
+  // The epsilon is load-bearing, not defensive. match.ts advances the clock
+  // with `simNow += TICK_DT`, so `now` accumulates float error, while this
+  // gate is set to `now + 1/rof`. Every rof in WEAPONS is chosen as 30/n so a
+  // shot interval is a whole number of ticks; without the slack a cooldown
+  // landing exactly on a tick boundary is a coin flip that silently adds one
+  // tick, turning a 1.200s time-to-kill into 1.300s.
+  if (now < p.cooldownUntil - 1e-6) return
 
   // Reload completes here rather than at the instant the mag ran dry, so the
   // magazine the HUD shows is the magazine the gun actually has. Refilling on
@@ -718,7 +735,16 @@ function stepFire(
     // tells the two apart -- it plays the swing but suppresses the tracer
     // the 'shot' event below would otherwise draw.
     events.push({ type: 'melee_swing', playerId: p.id, weapon: weaponId })
-    doMeleeAttack(sim, p, weapon.lungeRange ?? MELEE_RANGE, weapon.damage, weaponId, now, events)
+    doMeleeAttack(
+      sim,
+      p,
+      weapon.lungeRange ?? MELEE_RANGE,
+      weapon.damage,
+      weaponId,
+      now,
+      events,
+      weapon.aoeMelee ?? false
+    )
     // Bug fix (diagnosis-confirmed): this branch returned before the 'shot'
     // event below, so arc_blade/grav_maul dealt real damage but the client
     // never got the event it gates ALL fire feedback on (sound/kick/hit-
@@ -782,7 +808,11 @@ function stepFire(
           // once the shield is already down. Read before applyDamage, so a
           // multi-pellet burst can strip the shield with pellet 1 and have
           // pellet 2 land the multiplied finisher inside one trigger pull.
-          const mult = hit.head && target.shield <= 0 ? weapon.headshotMult : 1
+          // headshotIgnoresShield opts a weapon out of the gate entirely
+          // (railspike only), which is the one-shot-headshot sniper Halo
+          // has and the shield gate had quietly removed.
+          const mult =
+            hit.head && (target.shield <= 0 || weapon.headshotIgnoresShield) ? weapon.headshotMult : 1
           applyDamage(target, weapon.damage * mult, now)
           if (!target.alive) {
             sim.killPlayer(target, now, p.id, weaponId, { ...target.pos }, events, !!hit.head)
@@ -939,13 +969,14 @@ function explodeProjectile(
       }
       break
     }
-    case 'ion_charge': {
-      if (hitPlayerId) {
-        const target = sim.players.get(hitPlayerId)
-        if (target && target.alive) applyDamage(target, WEAPONS.ion_charger.damage, now)
-      }
+    case 'cinderlob':
+      // Splashes on ANY detonation, not just a direct player hit. The
+      // Cindershot's whole job is reaching a defender who is not in clean
+      // line of sight, so a round that bursts on the wall beside them has
+      // to do something -- the old flat direct-hit-only damage made it a
+      // worse rocket instead of a different tool.
+      explode(pr.pos, WEAPONS.cinderlob.damage, WEAPONS.cinderlob.splashRadius ?? 0, playersArr, now)
       break
-    }
     case 'boomtube':
       explode(pr.pos, WEAPONS.boomtube.damage, WEAPONS.boomtube.splashRadius ?? 0, playersArr, now)
       break

@@ -5,6 +5,7 @@ import {
   SHIELD_RECHARGE_DELAY,
   SHIELD_RECHARGE_RATE,
   GRAVITY,
+  PLAYER_HEIGHT,
   PLAYER_BODY_CENTER_Y,
   PLAYER_BODY_RADIUS,
   PLAYER_HEAD_CENTER_Y,
@@ -195,7 +196,7 @@ export function raycast(
 
 export interface Projectile {
   id: number
-  kind: 'boomtube' | 'swarm_dart' | 'ion_charge' | 'frag' | 'mag'
+  kind: 'boomtube' | 'swarm_dart' | 'cinderlob' | 'frag' | 'mag'
   pos: Vec3
   vel: Vec3
   ownerId: string
@@ -237,6 +238,25 @@ function bounceFrag(pr: Projectile, prev: Vec3, box: AABB): void {
   vel[hitAxis] = -pr.vel[hitAxis] * FRAG_BOUNCE_DAMPING
   pr.vel = vel
   pr.pos = { ...pr.pos, [hitAxis]: face }
+}
+
+/**
+ * True when the swept segment prev->cur passes within `radius` of `center`.
+ *
+ * Bug fix: the contact tests below used to point-sample the projectile's
+ * post-integration position. At TICK_DT a 25 m/s rocket moves 0.83m and a
+ * 24 m/s needle 0.80m per tick, against a body sphere only 1.16m across, so
+ * a glancing trajectory stepped clean past a player and registered nothing.
+ * The needler's supercombine needs six discrete sticks, so a dropped stick
+ * there is not cosmetic — it is the difference between a kill and nothing.
+ */
+function segmentHitsSphere(prev: Vec3, cur: Vec3, center: Vec3, radius: number): boolean {
+  const seg = sub(cur, prev)
+  const segLenSq = dot(seg, seg)
+  const toCenter = sub(center, prev)
+  if (segLenSq < 1e-12) return dot(toCenter, toCenter) <= radius * radius
+  const t = clamp(dot(toCenter, seg) / segLenSq, 0, 1)
+  return distSq(add(prev, scale(seg, t)), center) <= radius * radius
 }
 
 function steerTowards(curDir: Vec3, targetDir: Vec3, maxAngle: number): Vec3 {
@@ -297,7 +317,7 @@ export function stepProjectile(
   if (pr.kind === 'mag') {
     for (const p of players) {
       if (p.id === pr.ownerId || !p.alive) continue
-      if (distSq(pr.pos, bodyCenter(p.pos)) <= PLAYER_BODY_RADIUS * PLAYER_BODY_RADIUS) {
+      if (segmentHitsSphere(prevPos, pr.pos, bodyCenter(p.pos), PLAYER_BODY_RADIUS)) {
         pr.stuckToId = p.id
         pr.vel = { x: 0, y: 0, z: 0 }
         return { exploded: now >= pr.fuseAt, hitPlayerId: p.id }
@@ -315,7 +335,7 @@ export function stepProjectile(
   if (pr.kind === 'swarm_dart') {
     for (const p of players) {
       if (p.id === pr.ownerId || !p.alive) continue
-      if (distSq(pr.pos, bodyCenter(p.pos)) <= PLAYER_BODY_RADIUS * PLAYER_BODY_RADIUS) {
+      if (segmentHitsSphere(prevPos, pr.pos, bodyCenter(p.pos), PLAYER_BODY_RADIUS)) {
         p.stuckDarts += 1
         return { exploded: true, hitPlayerId: p.id }
       }
@@ -326,10 +346,10 @@ export function stepProjectile(
     return { exploded: false }
   }
 
-  // boomtube / ion_charge: detonate on any contact
+  // boomtube / cinderlob: detonate on any contact
   for (const p of players) {
     if (p.id === pr.ownerId || !p.alive) continue
-    if (distSq(pr.pos, bodyCenter(p.pos)) <= PLAYER_BODY_RADIUS * PLAYER_BODY_RADIUS) {
+    if (segmentHitsSphere(prevPos, pr.pos, bodyCenter(p.pos), PLAYER_BODY_RADIUS)) {
       return { exploded: true, hitPlayerId: p.id }
     }
   }
@@ -339,7 +359,19 @@ export function stepProjectile(
   return { exploded: false }
 }
 
-/** Linear falloff splash damage. No self-exemption — rocket-jump risk stays. */
+/**
+ * Linear falloff splash damage. No self-exemption — rocket-jump risk stays.
+ *
+ * Falloff is measured to the nearest point of the target's own body COLUMN,
+ * not to p.pos (their feet). Bug fix: contact projectiles detonate within
+ * PLAYER_BODY_RADIUS of bodyCenter, which is PLAYER_BODY_CENTER_Y above the
+ * feet, so a feet-measured direct hit read ~1.07m of distance and quietly
+ * cut a rocket's damage by a third — a clean SPNKR hit could not kill a
+ * full-shield player. Clamping the blast into the column instead of moving
+ * the measurement up to the chest is deliberate: a grenade landing at a
+ * target's feet still reads d ~ 0, so FRAG_DAMAGE/MAG_DAMAGE tuning is
+ * unchanged.
+ */
 export function explode(
   center: Vec3,
   damage: number,
@@ -350,7 +382,12 @@ export function explode(
   const results: { playerId: string; damage: number }[] = []
   for (const p of players) {
     if (!p.alive) continue
-    const d = length(sub(p.pos, center))
+    const nearestOnColumn: Vec3 = {
+      x: p.pos.x,
+      y: clamp(center.y, p.pos.y, p.pos.y + PLAYER_HEIGHT),
+      z: p.pos.z,
+    }
+    const d = length(sub(nearestOnColumn, center))
     if (d >= radius) continue
     const dmg = damage * (1 - d / radius)
     results.push({ playerId: p.id, damage: dmg })

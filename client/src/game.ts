@@ -63,11 +63,12 @@ const FIRE_KICK_SEVERITY: Record<WeaponId, number> = {
   triad_rifle: 0.55,
   scattergun: 0.85,
   railspike: 0.75,
-  ion_charger: 0.6,
+  cinderlob: 0.6,
   boomtube: 1,
   swarm_pod: 0.6,
   arc_blade: 0.5,
   grav_maul: 0.85,
+  commando: 0.45,
 }
 /** Seconds between per-bullet hit sparks on the SAME target. Roughly two
  * pulse_smg shots (rof 10) so a stream still reads as continuous. */
@@ -86,11 +87,12 @@ const WEAPON_SOUND: Record<WeaponId, SoundName> = {
   triad_rifle: 'shot_rifle',
   scattergun: 'shot_rifle',
   railspike: 'shot_rail',
-  ion_charger: 'shot_rail',
+  cinderlob: 'shot_boom',
   boomtube: 'shot_boom',
   swarm_pod: 'shot_boom',
   arc_blade: 'blade_lunge',
   grav_maul: 'melee_swing',
+  commando: 'shot_rifle',
 }
 
 /** Structural shim for the power-pickup pad renderer that render/effects.ts

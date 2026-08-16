@@ -112,7 +112,20 @@ export const gutter: GameMap = {
   // the power weapon for free on the way. z = 0 keeps it exactly 26m from
   // both flag stands (dead even for both teams); the east rail balances the
   // teleporter alcoves, which are both on the west rail.
-  powerPickups: [{ pos: { x: 5, y: 0, z: 0 }, weapon: 'boomtube', respawnSec: 45 }],
+  // Point-symmetric set (rotate180, matching this map's cover layout). The
+  // two power weapons face each other across the mid line at z = 0, so both
+  // are exactly equidistant from both bases and neither sits in a flag room
+  // -- a one-hit melee that spawns where a defender already stands turns a
+  // flag into a camp. gutter takes the Gravity Hammer rather than the Energy
+  // Sword: one power melee per map, and the hammer's shorter reach suits a
+  // lane this tight.
+  powerPickups: [
+    { pos: { x: 5, y: 0, z: 0 }, weapon: 'boomtube', respawnSec: 150 },
+    { pos: { x: -5, y: 0, z: 0 }, weapon: 'grav_maul', respawnSec: 150 },
+    // On the rails, mid-lane, where the cover run already takes bots.
+    { pos: { x: -5, y: 0, z: -12 }, weapon: 'scattergun', respawnSec: 45 },
+    { pos: { x: 5, y: 0, z: 12 }, weapon: 'scattergun', respawnSec: 45 },
+  ],
   spawns: [
     [
       { x: -3, y: 0.5, z: -27 },

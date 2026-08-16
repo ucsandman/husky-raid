@@ -144,14 +144,39 @@ export const bastion: GameMap = {
     { a: { x: -18, y: 0, z: -28 }, b: { x: 18, y: 0, z: 28 }, radius: 1 },
     { a: { x: 18, y: 0, z: -28 }, b: { x: -18, y: 0, z: 28 }, radius: 1 },
   ],
-  // Railspike on top of the mid platform -- the only way to it is to mount
-  // the 1.2m feature, so holding the power weapon means holding the power
-  // position. Scattergun pads mirror each other on the two flanks, 2.5m off
-  // the flank walk line.
+  // Two tiers. NICHE pads carry short timers and sit on the routes; POWER
+  // pads carry long ones and all sit on the mid line at z = 0, on the route
+  // BETWEEN the bases and never inside a flag room -- the same one-hit sword
+  // that reads as a push tool at mid reads as an unbreakable flag camp where
+  // a defender already stands.
+  //
+  // Every position pairs under rotate180 (map.test.ts enforces it on the set
+  // as a whole), and everything on the z = 0 line is exactly equidistant
+  // from both bases, so a mirrored pair of DIFFERENT weapons is still fair:
+  // neither team is nearer to either pad. The sniper keeps the origin, the
+  // only self-symmetric spot on the map.
+  //
+  // Placement also accounts for what bots can and cannot exploit. The
+  // railspike and boomtube are the two weapons a bot structurally cannot
+  // use well (no head-aim path, no velocity lead), so they sit on the mid
+  // platform and the open mid line -- ground a human has to rotate to and
+  // hold. The bot-competent pads (Bulldog, Commando) sit where patrol routes
+  // already cross.
   powerPickups: [
-    { pos: { x: 0, y: 1.2, z: 0 }, weapon: 'railspike', respawnSec: 45 },
-    { pos: { x: -17, y: 0, z: 0 }, weapon: 'scattergun', respawnSec: 30 },
-    { pos: { x: 17, y: 0, z: 0 }, weapon: 'scattergun', respawnSec: 30 },
+    // POWER tier.
+    { pos: { x: 0, y: 1.2, z: 0 }, weapon: 'railspike', respawnSec: 120 },
+    { pos: { x: -6, y: 0, z: 0 }, weapon: 'boomtube', respawnSec: 150 },
+    { pos: { x: 6, y: 0, z: 0 }, weapon: 'arc_blade', respawnSec: 120 },
+    // NICHE tier. One weapon per mirrored pair so neither team gets an
+    // option the other lacks.
+    { pos: { x: -17, y: 0, z: 0 }, weapon: 'triad_rifle', respawnSec: 30 },
+    { pos: { x: 17, y: 0, z: 0 }, weapon: 'triad_rifle', respawnSec: 30 },
+    { pos: { x: -11, y: 0, z: 0 }, weapon: 'scattergun', respawnSec: 45 },
+    { pos: { x: 11, y: 0, z: 0 }, weapon: 'scattergun', respawnSec: 45 },
+    // In the divider doorways (z -19..-16 / 16..19), where a push switches
+    // routes -- so each team passes a Commando on the way out.
+    { pos: { x: -5, y: 0, z: -18 }, weapon: 'commando', respawnSec: 30 },
+    { pos: { x: 5, y: 0, z: 18 }, weapon: 'commando', respawnSec: 30 },
   ],
   spawns: [
     [
