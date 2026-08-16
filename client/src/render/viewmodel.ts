@@ -14,10 +14,17 @@ const WEAPON_ORDER: WeaponId[] = [
   'scattergun',
   'sidearm',
   'swarm_pod',
-  'ion_charger',
+  'cinderlob',
   'arc_blade',
   'grav_maul',
+  'commando',
 ]
+
+/** Fixed hue-wheel divisor, deliberately larger than WEAPON_ORDER. Dividing
+ * by the array's own length meant adding one weapon re-hued every other
+ * weapon's viewmodel accent AND its pickup pad, so a one-gun change read as
+ * a rendering bug. The headroom absorbs the next two additions. */
+const ACCENT_HUE_SLOTS = 13
 
 interface Parts {
   shell: THREE.BufferGeometry[]
@@ -33,7 +40,7 @@ interface Parts {
  * player learns which pad is which from across the map. */
 export function accentColor(id: WeaponId): number {
   const idx = Math.max(0, WEAPON_ORDER.indexOf(id))
-  return new THREE.Color().setHSL(idx / WEAPON_ORDER.length, 0.72, 0.55).getHex()
+  return new THREE.Color().setHSL(idx / ACCENT_HUE_SLOTS, 0.72, 0.55).getHex()
 }
 
 function cyl(r0: number, r1: number, h: number, seg: number): THREE.CylinderGeometry {
@@ -204,17 +211,19 @@ function attachGeneratedRifle(
     })
 }
 
-/** One of three families keyed off WeaponDef.kind so all ten ids read as
- * distinct hardware without ten hand-built models: power_melee gets an energy
- * blade, projectile/charge a heavy launcher, hitscan/burst a rifle
- * (short-barrelled for the sidearm and the SMG). */
+/** One of three families keyed off WeaponDef.kind so every id reads as
+ * distinct hardware without a hand-built model each: power_melee gets an
+ * energy blade, projectile/charge a heavy launcher, hitscan/burst a rifle.
+ * Only the sidearm is short-barrelled -- the MA40 is a full-size rifle, and
+ * a compact silhouette was the first thing that broke it being recognisable
+ * as an assault rifle. */
 function partsFor(id: WeaponId): Parts {
   const def = WEAPONS[id]
   return def.kind === 'power_melee'
     ? bladeParts()
     : def.kind === 'projectile' || def.kind === 'charge'
       ? launcherParts()
-      : rifleParts(id === 'sidearm' || id === 'pulse_smg')
+      : rifleParts(id === 'sidearm')
 }
 
 /**

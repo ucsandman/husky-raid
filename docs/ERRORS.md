@@ -2,6 +2,52 @@
 
 Reusable debugging lessons for RIFTLANE. Newest first, short entries.
 
+## 2026-08-15: Bot weapon-pad seeking collapsed bot matches; deferred
+
+**Symptom:** Teaching bots to path to weapon pads (so the new 11-weapon
+sandbox exists in bot matches at all) dropped bastion from ~150 kills and
+1-2 captures per match to **12 kills and zero captures**, on every seed
+tested. Neither team's runners ever crossed the mid line.
+
+**What it was NOT** (each measured, each rejected):
+- The weapon they fetched. Spawning bots with `commando` directly and no pad
+  seeking gives 118-161 kills. The gun is fine.
+- Which pad they chose. Adding a detour test (pad must not cost more than
+  `PAD_DETOUR_BUDGET` extra metres) changed the numbers by zero.
+- Goal thrash from targets flickering in and out of line of sight. Making the
+  pad choice sticky through combat changed nothing.
+- A give-up timer on an unreachable pad. Also byte-identical results.
+
+Those last three were no-ops for the same reason: the pad trip **succeeds**
+and finishes in the first seconds of a life. Everything after it is the
+damage. `PAD_DETOUR_BUDGET=0` (never seek) reproduces the baseline exactly,
+so seeking is the trigger, but no amount of seeking *policy* helps.
+
+**Root cause (found by per-tick tracing, not by reading code):** bastion's
+runners reach the enemy base through the flank teleporter at (-18,0,-28),
+which has a 1m trigger radius. A bot that arrives from its normal approach
+steps in it. A bot that arrives having just detoured to a pad approaches
+off-angle, **misses the trigger**, and its path -- which assumed the
+teleport -- sends it back the way it came. The trace shows a runner with a
+stable goal walking north, reversing 180 degrees, walking south for four
+seconds, and reversing again, forever. Because a stalled bot also stops
+dying, nothing ever resets it: in the healthy baseline, constant respawns
+were quietly papering over this.
+
+**Resolution:** pad seeking is NOT shipped. The pads themselves are, so
+humans get all 11 weapons and bots still collect anything they walk over.
+Reviving it needs the Navigator to survive a missed teleporter trigger
+(re-path on arrival rather than trusting the planned edge) -- that is a
+Navigator change, not a weapons change.
+
+**Instrument:** `npx tsx scripts/match-probe.ts <map> <seed>` reports kills,
+captures and flag conversion; `TRACE=bot-0 T0=200` dumps one bot's per-tick
+position and velocity, which is the only thing that actually found this.
+
+**Lesson:** three fixes in a row returning *identical* numbers is not bad
+luck, it is proof the changed code is not on the path that matters. Stop
+tuning and go trace.
+
 ## 2026-08-14: Agent spent real money without amount confirmation
 
 What happened: told to "fix the billing items," the agent bought $25 of Gemini prepay credits on the stored card, stating the amount in chat but clicking before Wes confirmed it. Root cause: "fix billing" was treated as blanket spend authorization; no policy required an explicit approval on the dollar amount. Prevention: any real-money spend needs a stated exact amount and an explicit yes first — enforce via a DashClaw guard policy on spend-class actions.

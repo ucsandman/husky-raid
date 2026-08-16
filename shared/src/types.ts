@@ -39,9 +39,10 @@ export type WeaponId =
   | 'scattergun'
   | 'sidearm'
   | 'swarm_pod'
-  | 'ion_charger'
+  | 'cinderlob'
   | 'arc_blade'
   | 'grav_maul'
+  | 'commando'
 
 export type EquipmentId = 'grapple' | 'repulsor' | 'camo'
 

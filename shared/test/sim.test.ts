@@ -483,6 +483,50 @@ describe('MatchSim: melee lunge (task 6)', () => {
   })
 })
 
+describe('MatchSim: power melee area swing', () => {
+  /** Two enemies clumped in front of A, both inside grav_maul's 3m lunge
+   * range and its 60-degree cone. */
+  function twoClumpedTargets(weapon: 'grav_maul' | 'arc_blade') {
+    const sim = new MatchSim('gutter', 44)
+    const a = sim.addPlayer('a', 'A', 0, false)
+    const b = sim.addPlayer('b', 'B', 1, false)
+    const c = sim.addPlayer('c', 'C', 1, false)
+    a.pos = { x: 0, y: 0, z: -15 }
+    a.yaw = 0 // forward = +z
+    a.weapons = [weapon, 'sidearm']
+    a.activeWeapon = 0
+    a.ammo = [1, 12]
+    a.cooldownUntil = 0
+    b.pos = { x: -0.5, y: 0, z: -13.5 }
+    c.pos = { x: 0.5, y: 0, z: -13.4 }
+    return { sim, a, b, c }
+  }
+
+  it('a hammer swing kills every enemy in the cone, with a kill event each', () => {
+    const { sim, a, b, c } = twoClumpedTargets('grav_maul')
+
+    sim.setInput('a', makeInput({ yaw: 0, fire: true }))
+    const events = sim.tick(TICK_DT)
+
+    expect(b.alive).toBe(false)
+    expect(c.alive).toBe(false)
+    const kills = events.filter((e) => e.type === 'kill')
+    expect(kills).toHaveLength(2)
+    expect(a.kills).toBe(2)
+  })
+
+  it('a sword swing still only kills the nearest, so the two are not interchangeable', () => {
+    const { sim, b, c } = twoClumpedTargets('arc_blade')
+
+    sim.setInput('a', makeInput({ yaw: 0, fire: true }))
+    sim.tick(TICK_DT)
+
+    // b is nearer (1.58m vs c's 1.68m), so b dies and c walks away.
+    expect(b.alive).toBe(false)
+    expect(c.alive).toBe(true)
+  })
+})
+
 describe('MatchSim: kill event head flag (task 7)', () => {
   it('a railspike headshot kill emits head:true', () => {
     const sim = new MatchSim('gutter', 41)

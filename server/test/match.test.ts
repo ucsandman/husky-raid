@@ -3,7 +3,7 @@ import { HostedMatch } from '../src/match'
 import { BotBrain, DEFAULT_DIFFICULTY, DIFFICULTIES } from '../src/bots/brain'
 import { Navigator } from '../src/bots/nav'
 import type { PlayerInput, ServerMsg, SimEvent } from '@riftlane/shared'
-import { MatchSim, TICK_DT, CAPTURES_TO_WIN, WARMUP_SEC } from '@riftlane/shared'
+import { MAPS, MatchSim, TICK_DT, CAPTURES_TO_WIN, WARMUP_SEC } from '@riftlane/shared'
 
 function makeInput(overrides?: Partial<PlayerInput>): PlayerInput {
   return {
@@ -314,7 +314,6 @@ describe('HostedMatch: snapshot pickups field', () => {
   it('includes pickups (index-aligned with map.powerPickups) for a map that has pads', () => {
     vi.useFakeTimers()
     const received: ServerMsg[] = []
-    // gutter has one powerPickups pad.
     const match = new HostedMatch('gutter', 10, (_id, msg) => received.push(msg), () => 5000)
     match.addHuman('h1', 'Human1')
     match.start()
@@ -324,7 +323,10 @@ describe('HostedMatch: snapshot pickups field', () => {
 
     const snap = received.filter(isSnapshot).at(-1)
     expect(snap).toBeDefined()
-    expect(snap!.pickups).toEqual([true])
+    // Index-aligned with the map's own pad table, so this stays honest when
+    // pads are added rather than pinning a count that has to be edited.
+    expect(snap!.pickups).toEqual(MAPS.gutter.powerPickups!.map(() => true))
+    expect(snap!.pickups!.length).toBeGreaterThan(1)
   })
 })
 

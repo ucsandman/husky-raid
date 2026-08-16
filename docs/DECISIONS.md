@@ -2,6 +2,55 @@
 
 Durable architecture and design decisions for RIFTLANE. One dated entry each; alternatives rejected noted where relevant.
 
+## 2026-08-15: Halo Infinite weapon sandbox -- fixed spawn pair, two pad tiers
+
+The 11-weapon roster mimics Halo Infinite directly (MA40, MK50, BR75, VK78
+Commando, Bulldog, Needler, Cindershot, S7 Sniper, SPNKR, Energy Sword,
+Gravity Hammer). Full stat table, time-to-kill proofs and the tournament that
+produced it: `docs/superpowers/specs/2026-08-15-halo-gun-roster-design.md`.
+
+Three structural choices, each rejecting a plausible alternative:
+
+**Random loadouts are gone.** Every player and bot spawns with the same
+MA40 + MK50 + 2 frags. Halo has no loadouts, every fight now starts from a
+known baseline, and map pads are the only variable. The old 2-of-10 roll
+could hand one player an Energy Sword against someone else's Needler, and it
+regularly respawned bots holding two weapons that could not answer at 20m.
+Rejected: keeping the roll but weighting it -- that preserves the actual
+problem (an unknowable opening matchup) for no gain.
+
+**One weapon opts out of the shield gate, not zero and not several.**
+`headshotIgnoresShield` is set on railspike alone, which is what makes a
+sniper headshot a one-shot kill through a full shield. The two-stage
+strip-then-headshot kill stays the baseline for every other weapon, and a
+test pins that only railspike carries the flag. Rejected: removing the gate
+(deletes the sandbox's whole combat identity) and leaving it (the sniper
+simply does not exist -- the old code comment said as much).
+
+**The Gravity Hammer is an area weapon, or it is just a worse sword.**
+`aoeMelee` makes one swing kill every enemy in the melee cone. Without it the
+hammer was a shorter, slower Energy Sword with no reason to exist. It costs
+~5 lines in `doMeleeAttack`.
+
+Equipment stays a spawn roll rather than a map pickup: `map.powerPickups` is
+typed to `WeaponId`, so putting equipment on pads is a schema change, not a
+tune. Deferred deliberately.
+
+## 2026-08-15: Weapon pads are a human-facing layer for now
+
+All three maps carry the two-tier pad layout, and pad positions stay
+symmetric under each map's own transform (bastion/gutter rotate180, hairpin
+mirrorX) -- `shared/test/map.test.ts` enforces this on the set as a whole.
+Power pads sit on the route BETWEEN bases and never inside a flag room,
+because the same one-hit melee that reads as a push tool at mid reads as an
+unbreakable flag camp where a defender already stands.
+
+Bots do NOT path to pads. They collect what they walk over, nothing more, so
+a seeded bot match is still fought mostly with the spawn pair. Teaching them
+to fetch pads measurably broke bot navigation on bastion; the full autopsy
+and the reason it is a Navigator problem rather than a weapons one is in
+`docs/ERRORS.md` (2026-08-15).
+
 ## 2026-08-14: Authoritative server + client-side prediction
 
 The server (`server/src/match.ts`) runs the only simulation that matters -- clients never decide their own outcome. Each client predicts its own local player from unacknowledged inputs (`client/src/predict.ts`) so movement feels instant, and interpolates remote players between 20Hz snapshots. Rejected: fully client-authoritative or lockstep netcode -- both are far easier to cheat and lockstep stalls the whole match on one slow client.

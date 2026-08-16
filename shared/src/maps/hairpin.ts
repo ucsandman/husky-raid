@@ -88,7 +88,19 @@ export const hairpin: GameMap = {
   // on the walkway above. z = 28 sits 2m clear of the walkway footprint and
   // 2m off the launch pad at (0,0,26), so it guards the route up without
   // being free to anyone who takes it.
-  powerPickups: [{ pos: { x: 0, y: 0, z: 28 }, weapon: 'railspike', respawnSec: 45 }],
+  // Mirror-symmetric set (mirrorX: x -> -x, z fixed), matching this map's
+  // own cover layout rather than bastion's rotate180 -- both legs run the
+  // same z-direction here, so a pad on the x = 0 centre line is already
+  // self-symmetric at any z. The sniper keeps the joint mouth (the map's
+  // contested feature) and the hammer sits dead centre in the U's fill,
+  // equidistant from both bases and on the route between them.
+  powerPickups: [
+    { pos: { x: 0, y: 0, z: 28 }, weapon: 'railspike', respawnSec: 120 },
+    { pos: { x: 0, y: 0, z: 0 }, weapon: 'grav_maul', respawnSec: 150 },
+    // One per leg, so each team passes a BR without crossing the U.
+    { pos: { x: -10, y: 0, z: 0 }, weapon: 'triad_rifle', respawnSec: 30 },
+    { pos: { x: 10, y: 0, z: 0 }, weapon: 'triad_rifle', respawnSec: 30 },
+  ],
   spawns: [
     [
       { x: -11, y: 0.5, z: -24 },

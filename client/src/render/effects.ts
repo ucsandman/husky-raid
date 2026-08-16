@@ -812,7 +812,7 @@ export class EffectsSystem {
 const PROJECTILE_SPEC: Record<SnapProjectile['kind'], { shape: 'dart' | 'rod' | 'orb'; size: number; color: number }> = {
   boomtube: { shape: 'rod', size: 0.09, color: 0xff5533 },
   swarm_dart: { shape: 'dart', size: 0.07, color: 0x55ffaa },
-  ion_charge: { shape: 'orb', size: 0.13, color: 0x66ccff },
+  cinderlob: { shape: 'orb', size: 0.13, color: 0xff9944 },
   frag: { shape: 'orb', size: 0.12, color: 0x9fd08a },
   mag: { shape: 'orb', size: 0.14, color: 0xffaa33 },
 }

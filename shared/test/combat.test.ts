@@ -5,6 +5,8 @@ import { viewDir } from '../src/physics'
 import type { WeaponId } from '../src/types'
 import {
   TICK_DT,
+  TICK_RATE,
+  PLAYER_HEIGHT,
   MAX_SHIELD,
   MAX_HEALTH,
   FRAG_DAMAGE,
@@ -22,7 +24,7 @@ import {
   ADS_MOVE_MULT,
   MELEE_DAMAGE,
 } from '../src/constants'
-import { WEAPONS, WEAPON_POOL, rollLoadout } from '../src/weapons'
+import { WEAPONS, WEAPON_POOL, SPAWN_WEAPONS, rollLoadout } from '../src/weapons'
 import {
   applyDamage,
   tickShield,
@@ -90,26 +92,20 @@ describe('tickShield', () => {
 })
 
 describe('rollLoadout', () => {
-  it('never duplicates weapons and honors the injected rand sequence', () => {
-    // rollLoadout consumes two rand() calls for weapons (slot 0 from the
-    // ranged-only pool, slot 1 from the full pool minus slot 0), then
-    // grenades, then equipment -- four values total.
-    const rand = seqRand([0, 0, 0, 0])
-    const loadout = rollLoadout(rand)
-    expect(loadout.weapons[0]).toBe(WEAPON_POOL[0])
-    expect(loadout.weapons[1]).toBe(WEAPON_POOL[1])
+  it('gives every life the same utility pair; only equipment is rolled', () => {
+    // Halo has no loadouts. The weapon slots no longer consume rand() at
+    // all -- the single remaining draw is equipment.
+    const loadout = rollLoadout(seqRand([0]))
+    expect(loadout.weapons).toEqual(SPAWN_WEAPONS)
     expect(loadout.grenades).toEqual({ frag: 2, mag: 0 })
     expect(loadout.equipment).toBe('grapple')
 
-    const rand2 = seqRand([0.95, 0.95, 0.5, 0.5])
-    const loadout2 = rollLoadout(rand2)
-    expect(loadout2.weapons[0]).not.toBe(loadout2.weapons[1])
-    // EQUIPMENT_OPTIONS dropped its trailing null -- sandbox loadouts
-    // always roll a piece of equipment now.
-    expect(loadout2.equipment).not.toBe(null)
+    const loadout2 = rollLoadout(seqRand([0.95]))
+    expect(loadout2.weapons).toEqual(SPAWN_WEAPONS)
+    expect(loadout2.equipment).toBe('camo')
   })
 
-  it('200 seeded rolls: slot 0 is always a gun, no null equipment, no duplicate weapons', () => {
+  it('200 seeded rolls: always the same two guns, never a power melee, never null equipment', () => {
     for (let trial = 0; trial < 200; trial++) {
       let seed = trial * 7 + 1
       const prand = (): number => {
@@ -117,12 +113,23 @@ describe('rollLoadout', () => {
         return (seed % 10000) / 10000
       }
       const lo = rollLoadout(prand)
-      expect(WEAPON_POOL).toContain(lo.weapons[0])
-      // A loadout must always include a gun: slot 0 never rolls a power melee.
+      expect(lo.weapons).toEqual(SPAWN_WEAPONS)
+      // The pair must stay two usable guns: a spawn that cannot answer at
+      // range is what the old random roll kept handing bots.
       expect(WEAPONS[lo.weapons[0]].kind).not.toBe('power_melee')
+      expect(WEAPONS[lo.weapons[1]].kind).not.toBe('power_melee')
       expect(lo.weapons[0]).not.toBe(lo.weapons[1])
-      expect(WEAPON_POOL).toContain(lo.weapons[1])
       expect(lo.equipment).not.toBe(null)
+    }
+  })
+
+  it('every weapon fires on a whole number of ticks', () => {
+    // stepFire sets cooldownUntil to now + 1/rof against a fixed 30Hz tick,
+    // so an off-grid rof silently rounds the real interval up and every
+    // time-to-kill comment in weapons.ts stops being true.
+    for (const id of WEAPON_POOL) {
+      const ticks = TICK_RATE / WEAPONS[id].rof
+      expect(Math.abs(ticks - Math.round(ticks)), `${id} rof ${WEAPONS[id].rof} is off-grid`).toBeLessThan(1e-9)
     }
   })
 })
@@ -176,23 +183,22 @@ describe('hit-sphere geometry: Halo-feel widening', () => {
 })
 
 describe('railspike math', () => {
-  it('deals exactly MAX_SHIELD damage per body hit (the invariant the shield-zero test below depends on)', () => {
-    expect(WEAPONS.railspike.damage).toBe(MAX_SHIELD)
+  it('a headshot out-damages the entire pool, so the sniper one-shots', () => {
+    // 55 x 2 = 110 > 70 + 30. This is the whole reason railspike carries
+    // headshotIgnoresShield: without the exemption the gate pays mult 1 into
+    // a full shield and a sniper headshot is just 55.
+    const headDamage = WEAPONS.railspike.damage * WEAPONS.railspike.headshotMult
+    expect(headDamage).toBeGreaterThanOrEqual(MAX_SHIELD + MAX_HEALTH)
   })
 
-  it('body hit (70) exactly zeroes shield without touching health; head hit (140) kills a full-shield player outright', () => {
-    const bodyTarget = makeTestPlayer()
-    const r1 = applyDamage(bodyTarget, WEAPONS.railspike.damage, 0)
-    expect(r1).toBe('shield_break')
-    expect(bodyTarget.shield).toBe(0)
-    expect(bodyTarget.health).toBe(MAX_HEALTH)
-    expect(bodyTarget.alive).toBe(true)
-
-    const headTarget = makeTestPlayer()
-    const headDamage = WEAPONS.railspike.damage * WEAPONS.railspike.headshotMult
-    const r2 = applyDamage(headTarget, headDamage, 0)
-    expect(r2).toBe('killed')
-    expect(headTarget.health).toBe(0)
+  it('a body hit leaves the shield up, so the two-tap stays a two-tap', () => {
+    const target = makeTestPlayer()
+    const r1 = applyDamage(target, WEAPONS.railspike.damage, 0)
+    // 55 into a 70 shield leaves 15 and never reaches health.
+    expect(r1).toBe('hit')
+    expect(target.shield).toBe(MAX_SHIELD - WEAPONS.railspike.damage)
+    expect(target.health).toBe(MAX_HEALTH)
+    expect(target.alive).toBe(true)
   })
 
   it('two body hits kill a full-shield player', () => {
@@ -219,6 +225,45 @@ describe('explode', () => {
     expect(rc?.damage).toBeCloseTo(90)
     expect(rh?.damage).toBeCloseTo(45)
     expect(re).toBeUndefined()
+  })
+
+  // Regression guard. The falloff above is measured entirely on the XZ
+  // plane, which is exactly why it stayed green while a vertical bug ran
+  // loose: falloff used to be measured from p.pos (the FEET) while contact
+  // projectiles detonate at chest height, so a clean rocket hit silently
+  // lost a third of its damage and could not kill a full-shield player.
+  it('measures falloff to the body column, so a chest-height blast is a direct hit', () => {
+    const atChest = makeTestPlayer({ id: 'chest', pos: { x: 0, y: 0, z: 0 } })
+    const center = { x: 0, y: PLAYER_BODY_CENTER_Y, z: 0 }
+
+    const [r] = explode(center, FRAG_DAMAGE, FRAG_RADIUS, [atChest], 0)
+    expect(r.damage).toBeCloseTo(FRAG_DAMAGE)
+  })
+
+  it('a grenade at the feet still deals full damage (the reason the blast is clamped, not raised)', () => {
+    // Raising the measurement to the chest instead of clamping into the
+    // column would have quietly cut this from 90 to 69.75.
+    const atFeet = makeTestPlayer({ id: 'feet', pos: { x: 0, y: 0, z: 0 } })
+    const [r] = explode({ x: 0, y: 0, z: 0 }, FRAG_DAMAGE, FRAG_RADIUS, [atFeet], 0)
+    expect(r.damage).toBeCloseTo(FRAG_DAMAGE)
+  })
+
+  it('a blast above the head still falls off with height', () => {
+    const below = makeTestPlayer({ id: 'below', pos: { x: 0, y: 0, z: 0 } })
+    const center = { x: 0, y: PLAYER_HEIGHT + FRAG_RADIUS / 2, z: 0 }
+    const [r] = explode(center, FRAG_DAMAGE, FRAG_RADIUS, [below], 0)
+    expect(r.damage).toBeCloseTo(FRAG_DAMAGE / 2)
+  })
+
+  it('a direct rocket hit kills a full-shield player outright', () => {
+    // The number that motivated the fix: worst case is a detonation
+    // PLAYER_BODY_RADIUS off the column, and it still has to kill.
+    const target = makeTestPlayer({ id: 'rocketed', pos: { x: 0, y: 0, z: 0 } })
+    const center = { x: PLAYER_BODY_RADIUS, y: PLAYER_BODY_CENTER_Y, z: 0 }
+    const [r] = explode(center, WEAPONS.boomtube.damage, WEAPONS.boomtube.splashRadius ?? 0, [target], 0)
+
+    expect(r.damage).toBeGreaterThanOrEqual(MAX_SHIELD + MAX_HEALTH)
+    expect(target.alive).toBe(false)
   })
 })
 
@@ -505,16 +550,16 @@ describe('Halo pass 2: shield-gated headshots', () => {
   // one-tapped a full-shield player, which is why fights read as a generic
   // TTK race instead of strip-then-finish.
   it('does NOT apply headshotMult while the target still has shield', () => {
-    const { sim, a, b } = faceOff(601, 'railspike')
+    const { sim, a, b } = faceOff(601, 'sidearm')
     b.shield = MAX_SHIELD
     b.health = MAX_HEALTH
 
     sim.setInput('a', makeInput({ yaw: a.yaw, pitch: 0, fire: true }))
     sim.tick(TICK_DT)
 
-    // 70 un-multiplied exactly zeroes the shield and leaves health alone.
+    // 12 un-multiplied, not 24: the gate is shut while the shield is up.
     expect(b.alive).toBe(true)
-    expect(b.shield).toBe(0)
+    expect(b.shield).toBe(MAX_SHIELD - WEAPONS.sidearm.damage)
     expect(b.health).toBe(MAX_HEALTH)
   })
 
@@ -529,8 +574,27 @@ describe('Halo pass 2: shield-gated headshots', () => {
     sim.setInput('a', makeInput({ yaw: a.yaw, pitch: 0, fire: true }))
     sim.tick(TICK_DT)
 
-    // pulse_smg 8 x2 = 16 off a stripped shield, not 8.
-    expect(b.health).toBe(MAX_HEALTH - 16)
+    // pulse_smg 8 x1.5 = 12 off a stripped shield, not 8.
+    expect(b.health).toBe(MAX_HEALTH - 12)
+  })
+
+  // The exemption, and the reason it is safe: ONE weapon opts out. If this
+  // and the sidearm test above are ever both green for the same weapon, the
+  // gate has been deleted rather than exempted.
+  it('railspike alone ignores the gate and one-shots a full-shield head', () => {
+    expect(WEAPONS.railspike.headshotIgnoresShield).toBe(true)
+    for (const id of WEAPON_POOL) {
+      if (id !== 'railspike') expect(WEAPONS[id].headshotIgnoresShield, id).toBeFalsy()
+    }
+
+    const { sim, a, b } = faceOff(601, 'railspike')
+    b.shield = MAX_SHIELD
+    b.health = MAX_HEALTH
+
+    sim.setInput('a', makeInput({ yaw: a.yaw, pitch: 0, fire: true }))
+    sim.tick(TICK_DT)
+
+    expect(b.alive).toBe(false)
   })
 })
 
