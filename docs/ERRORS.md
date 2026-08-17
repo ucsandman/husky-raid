@@ -2,6 +2,65 @@
 
 Reusable debugging lessons for RIFTLANE. Newest first, short entries.
 
+## 2026-08-17: `git worktree remove --force` deleted the main working tree
+
+One-line entry. To bisect a bot regression I made a worktree in `$TEMP` and
+symlinked the main repo's `node_modules` into it with `ln -s`. On Windows/MSYS
+that is not a symlink git will step over, and `git worktree remove --force`
+recursed through it and deleted 100 tracked files out of `C:\Projects\husky-raid`
+itself. Nothing was committed so `git restore -- client server shared` brought
+it all back, but three files of uncommitted work had to be re-applied by hand.
+**Prevention:** never link the real `node_modules` into a throwaway worktree --
+run `npm install` in it, or point tsx at the main repo. And never `--force`
+remove a directory you have linked anything real into.
+
+## 2026-08-17: Fixing bot vibration silently doubled bot lethality
+
+**Symptom:** `brain.test.ts` "full 8-bot match" (gutter seed 42) failed with
+`expected 480.00000000016627 to be less than 480` -- the match ran the entire
+clock at 1-1 instead of reaching CAPTURES_TO_WIN. Bots took the flag 42 times
+and scored twice.
+
+**Root cause:** commit `fdcafc3` ("bots no longer vibrate on flag stands")
+was correct and should stay. But before it, a bot guarding a flag stand
+wobbled **57 deg/tick** -- `yawTo()` on a near-zero delta returns noise, so
+the bot span in place. That wobble *was* the difficulty. Fixing it dropped
+flag-stand yaw jitter to 11.6 deg/tick (4.9x steadier) and raised non-carrier
+bot speed 4.15 -> 5.73 m/s, while carrier speed stayed at ~4.7. The
+`DIFFICULTIES` ladder (8/4/1.8 deg) had been calibrated against bots that
+could not aim, so nobody chose the new lethality: two `normal` defenders now
+kill a full-health attacker in 0.6s. Measured consequence -- runners reached
+the enemy flag at a **median 29 of 100 EHP** with a median 3 live enemies and
+0 friends within 25m, then died a median **0.6s** later, never getting closer
+than 44m to their own stand.
+
+**What it was NOT** (each measured against the seeded match, each rejected):
+- Attack volume. 3 runners / 1 defender raised takes 42 -> 58 but conversion
+  *fell* 5% -> 3%. Still no third capture.
+- Defender positioning. Widening `DEFENDER_PATROL_RADIUS` 3 -> 10 scattered
+  defenders into better interceptors: gutter got worse and bastion went to
+  **zero** captures.
+- Carrier support. `friendsNear` at pickup is 0.2-0.3 in the healthy commit
+  *and* the broken one, so it never was a coordination problem.
+- Carriers grabbing the flag hurt. Adding a shields-broken fall-back-and-
+  recharge behaviour lifted EHP-at-pickup 29 -> 40 but conversion only
+  4%. Reverted -- real improvement, wrong bottleneck, not worth the code.
+- The Halo weapon sandbox (`748085b`). Bisect cleared it: the gutter match was
+  already 0-0 at `fdcafc3`, one commit earlier.
+
+**Fix:** doubled `aimErrorDeg` across all three tiers (16/8/3.6) in
+`server/src/bots/brain.ts`, restoring the intended challenge against bots that
+can actually aim and keeping the ~2x tier spacing. gutter/42 now resolves 2-3
+at t=296s; 8 of 8 seeds reach a decisive score, first capture at ~10s (which
+matches the healthy window already documented at `FLAG_CARRIER_SPEED_MULT`).
+Tier order stays monotonic: 26.2 / 31.0 / 34.6 kills-per-minute.
+
+**Lesson:** when a bug is fixed in a system that other constants were tuned
+against, the tuning is now wrong even though nobody touched it. A bug can be
+load-bearing. Search for constants calibrated *around* the broken behaviour
+before assuming the fix is complete -- and bisect first: the commit that looks
+guilty (a weapons rework) was not the one that broke it.
+
 ## 2026-08-15: Bot weapon-pad seeking collapsed bot matches; deferred
 
 **Symptom:** Teaching bots to path to weapon pads (so the new 11-weapon

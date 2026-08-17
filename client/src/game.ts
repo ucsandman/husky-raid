@@ -49,31 +49,13 @@ const LANDING_DIP_VIEWMODEL_SCALE = 0.6
 const LANDING_FALL_VEL = -4.5 // m/s downward velocity that counts as "falling"
 const LANDING_SETTLE_VEL = 0.6 // |vel.y| this small right after a fast fall means the fall was arrested
 const DAMAGE_ATTRIBUTION_RADIUS = 10 // meters -- "plausible source" radius for the damage-direction indicator
-const RECOIL_DECAY_TAU = 0.09 // seconds
-const RECOIL_MAX = 0.09 // radians, hard cap so rapid-fire weapons can't stack recoil into a wild swing
 const SWAY_SMOOTH_TAU = 0.12
 const SWAY_SCALE = 0.045
 const SWAY_MAX = 0.02 // meters
 
-/** Relative fire-kick severity per weapon (0..1ish), scales the recoil
- * pitch kick. */
-const FIRE_KICK_SEVERITY: Record<WeaponId, number> = {
-  pulse_smg: 0.4,
-  sidearm: 0.35,
-  triad_rifle: 0.55,
-  scattergun: 0.85,
-  railspike: 0.75,
-  cinderlob: 0.6,
-  boomtube: 1,
-  swarm_pod: 0.6,
-  arc_blade: 0.5,
-  grav_maul: 0.85,
-  commando: 0.45,
-}
 /** Seconds between per-bullet hit sparks on the SAME target. Roughly two
  * pulse_smg shots (rof 10) so a stream still reads as continuous. */
 const HIT_SPARK_MIN_INTERVAL = 0.06
-const FIRE_RECOIL_BASE = 0.03 // radians
 
 // Audio-only heuristics: teleport/launchpad have no SimEvent on the wire, so
 // both are detected by diffing raw player state between consecutive
@@ -143,7 +125,6 @@ export class Game {
   private hud: Hud | null = null
 
   // ---- game-feel state (client-only juice, see feel.ts) -------------------
-  private recoilPitch = 0 // radians, decays exponentially toward 0
   private baseFov = 90 // matches render/scene.ts's FOV_DEGREES; immediately overwritten in start()
   private fovBump = 0 // additive degrees, lerped from horizontal speed
   private adsZoomT = 0 // 0 = unscoped, 1 = fully zoomed -- own (snappier) lerp track so ADS zoom never inherits fovBump's slower time constant
@@ -233,7 +214,6 @@ export class Game {
       store.set({ phase: 'menu', roomCode: null, hostId: null, players: [] })
     })
 
-    this.recoilPitch = 0
     this.setBaseFov(store.state.settings.fov)
     this.fovBump = 0
     this.adsZoomT = 0
@@ -566,10 +546,9 @@ export class Game {
     for (const inp of inputs) this.net.send({ t: 'input', input: inp })
     this.prediction.tick(dt)
 
-    // Decay independent of snapshot arrival so recovery stays smooth even
-    // if a snapshot is dropped -- both follow the repo's existing kickT
-    // convention (0 = just triggered, 1 = fully recovered).
-    this.recoilPitch = decayTo(this.recoilPitch, 0, dt, RECOIL_DECAY_TAU)
+    // Recovers independent of snapshot arrival so it stays smooth even if a
+    // snapshot is dropped -- follows the repo's existing kickT convention
+    // (0 = just triggered, 1 = fully recovered).
     this.landingDipT = Math.min(1, this.landingDipT + dt * LANDING_RECOVER_RATE)
 
     // Camera ROTATION is driven every render frame from the input manager's
@@ -585,7 +564,7 @@ export class Game {
     // the corpse), so the camera keeps looking around from where they fell
     // with no extra branch here.
     const look = this.input.getLookAngles()
-    ctx.camera.rotation.x = look.pitch - this.recoilPitch
+    ctx.camera.rotation.x = look.pitch
     ctx.camera.rotation.y = look.yaw + Math.PI
 
     const snap = this.latestSnapshot
@@ -699,8 +678,6 @@ export class Game {
         for (const ev of snap.events) {
           if (ev.type === 'shot' && ev.playerId === this.localId) {
             this.kickT = 0
-            const severity = FIRE_KICK_SEVERITY[ev.weapon]
-            this.recoilPitch = Math.min(RECOIL_MAX, this.recoilPitch + FIRE_RECOIL_BASE * severity)
           }
         }
         this.updateViewmodel(localSnap, dt, scoped, look)

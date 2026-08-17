@@ -8,12 +8,24 @@ export interface Difficulty {
   aimErrorDeg: number
 }
 
-/** Difficulty presets selectable per-match via botDifficulty. 'normal' is
- * today's original single fixed difficulty, unchanged. */
+/**
+ * Difficulty presets selectable per-match via botDifficulty.
+ *
+ * aimErrorDeg was doubled across all three tiers on 2026-08-17. The original
+ * 8/4/1.8 ladder was calibrated while bots physically could not hold a yaw:
+ * before the anti-vibration fix (fdcafc3) a bot guarding a flag stand wobbled
+ * 57 deg per tick, so the nominal aim error was a rounding error next to the
+ * jitter, and the jitter WAS the difficulty. Fixing the vibration dropped that
+ * to 11.6 deg/tick and silently made every tier far more lethal than its
+ * numbers claim -- two 'normal' defenders went to killing a full-health
+ * attacker in 0.6s, and bot offense collapsed to a 5% flag-conversion rate.
+ * Doubling restores the intended challenge against bots that can actually aim
+ * and keeps the ~2x spacing between tiers. Pinned by the 8-bot match tests.
+ */
 export const DIFFICULTIES: Record<'easy' | 'normal' | 'hard', Difficulty> = {
-  easy: { reactionMs: 550, aimErrorDeg: 8 },
-  normal: { reactionMs: 350, aimErrorDeg: 4 },
-  hard: { reactionMs: 220, aimErrorDeg: 1.8 },
+  easy: { reactionMs: 550, aimErrorDeg: 16 },
+  normal: { reactionMs: 350, aimErrorDeg: 8 },
+  hard: { reactionMs: 220, aimErrorDeg: 3.6 },
 }
 
 /** v1: one fixed difficulty for every bot. */

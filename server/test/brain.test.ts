@@ -261,10 +261,16 @@ describe('BotBrain: full 8-bot match', () => {
     // clock runs out": the match must actually reach a decisive conclusion
     // (a team hitting CAPTURES_TO_WIN) within the match clock, not merely
     // produce a single capture event somewhere in a near-480s match.
-    // sim.phase only becomes 'ended' here via CAPTURES_TO_WIN -- timeLeft
-    // starts at MATCH_TIME and the loop stops as soon as phase flips, so it
-    // can't reach 0 first. Empirically the seeded match reaches a decisive
-    // score by ~t=356s, comfortably inside the window.
+    //
+    // `now < maxTime` is the load-bearing assertion, NOT the phase check.
+    // sim.ts sets phase='ended' on `scores >= CAPTURES_TO_WIN || timeLeft
+    // <= 0`, and timeLeft counts down in lockstep with `now` -- so a match
+    // that merely runs out the clock also lands on 'ended' and satisfies the
+    // phase line below. (An earlier version of this comment claimed the
+    // clock "can't reach 0 first"; it can, and when bot offense regressed in
+    // fdcafc3 that is exactly what happened, leaving the phase assertion
+    // passing for the wrong reason.) Empirically the seeded match reaches a
+    // decisive score by ~t=296s, comfortably inside the window.
     expect(sim.phase).toBe('ended')
     expect(now).toBeLessThan(maxTime)
   })

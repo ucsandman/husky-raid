@@ -160,17 +160,26 @@ try {
     `ammo ${fired.before} -> ${fired.after}`)
 
   // --- aim down sights --------------------------------------------------
-  await waitAlive()
-  await reset()
-  await page.waitForTimeout(150)
-  await page.mouse.down({ button: 'right' })
-  await page.waitForTimeout(500)
-  const ads = await page.evaluate(() => ({
-    onWire: window.__probe.sent.some((i) => i.ads === true),
-    scope: !!document.querySelector('.hud-scope--show'),
-    crosshairHidden: !!document.querySelector('.hud-crosshair--hidden'),
-  }))
-  await page.mouse.up({ button: 'right' })
+  // Same 3-attempt survival retry as the fire check above, and for the same
+  // reason: a corpse cannot scope, so a bot killing the player inside the
+  // 500ms hold reads as a broken right mouse button. Measured 1 of 3 runs
+  // failing on unmodified main without this loop.
+  let ads = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await waitAlive()
+    await reset()
+    await page.waitForTimeout(150)
+    await page.mouse.down({ button: 'right' })
+    await page.waitForTimeout(500)
+    ads = await page.evaluate(() => ({
+      onWire: window.__probe.sent.some((i) => i.ads === true),
+      scope: !!document.querySelector('.hud-scope--show'),
+      crosshairHidden: !!document.querySelector('.hud-crosshair--hidden'),
+      survived: window.__probe.snaps.every((s) => s.alive),
+    }))
+    await page.mouse.up({ button: 'right' })
+    if (ads.survived) break
+  }
   check('right mouse scopes in', ads.onWire && ads.scope && ads.crosshairHidden,
     `wire=${ads.onWire} scope=${ads.scope} crosshairHidden=${ads.crosshairHidden}`)
 
