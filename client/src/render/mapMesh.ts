@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { AABB, GameMap, Team } from '@riftlane/shared'
 import { HAZARD_ACCENT, TEAM_GLOW, TELEPORT_A_COLOR, TELEPORT_B_COLOR, type MaterialLibrary } from './materials'
+import { makeFlag } from './flag'
 import {
   boundsOf,
   boxGeom,
@@ -274,6 +275,13 @@ export function buildMap(map: GameMap, lib: MaterialLibrary): THREE.Group {
 
   map.flagStands.forEach((stand, i) => {
     group.add(makeFlagBeacon(lib, stand, i as Team))
+    // The flag itself is a direct child of the map group, not of the beacon:
+    // it has to leave the stand (dropped mid-lane, or hidden while carried),
+    // so it is positioned in world space every frame from the snapshot. The
+    // beacon stays put as the plinth it sits in. See flag.ts's syncFlags.
+    const flag = makeFlag(lib, i as Team)
+    flag.position.set(stand.x, stand.y, stand.z)
+    group.add(flag)
   })
 
   for (const pad of map.launchPads) {

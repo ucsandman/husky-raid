@@ -69,15 +69,17 @@ export class Predictor {
     state.slideCooldownRemaining = 0
     state.coyoteTimeRemaining = 0
     state.jumpBufferRemaining = 0
-    // Same reasoning again: SnapPlayer carries no `scoped`, and (unlike the
-    // fields above) nothing here was resetting it -- an unowned gap flagged
-    // by the ADS task. stepMovement recomputes it fresh from input.ads on
-    // the very first replayed input below, same as sprinting, so this only
-    // matters when `pending` is empty after the ack-splice (every input
-    // already acked): without this reset, `scoped` would keep whatever
-    // stale value survived from before reconcile ran, until the next local
-    // input tick corrects it.
-    state.scoped = false
+    // SnapPlayer carries no `scoped` either, but it must NOT be blanket-reset
+    // like the fields above: unlike sprinting/slide timers it is a pure
+    // function of the newest input, so the value already on `state` is the
+    // truth whenever `pending` is empty after the ack-splice (which is most
+    // snapshots -- they land at 20Hz against 30Hz input ticks). Clearing it
+    // there un-scoped a player who was still holding ADS until the next input
+    // tick, and the camera FOV lerped hipfire-ward and back ~20x/second: the
+    // zoom flicker. A live player's `scoped` is re-derived by the replay
+    // below (or already correct); a dead one replays nothing at all, so the
+    // scope has to be dropped here or the death cam stays zoomed.
+    if (!state.alive) state.scoped = false
 
     let keepFrom = this.pending.length
     for (let i = 0; i < this.pending.length; i++) {

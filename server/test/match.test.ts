@@ -311,7 +311,7 @@ describe('HostedMatch: warmup', () => {
 })
 
 describe('HostedMatch: snapshot pickups field', () => {
-  it('includes pickups (index-aligned with map.powerPickups) for a map that has pads', () => {
+  it('omits pickups entirely, because no map carries weapon pads any more', () => {
     vi.useFakeTimers()
     const received: ServerMsg[] = []
     const match = new HostedMatch('gutter', 10, (_id, msg) => received.push(msg), () => 5000)
@@ -323,10 +323,11 @@ describe('HostedMatch: snapshot pickups field', () => {
 
     const snap = received.filter(isSnapshot).at(-1)
     expect(snap).toBeDefined()
-    // Index-aligned with the map's own pad table, so this stays honest when
-    // pads are added rather than pinning a count that has to be edited.
-    expect(snap!.pickups).toEqual(MAPS.gutter.powerPickups!.map(() => true))
-    expect(snap!.pickups!.length).toBeGreaterThan(1)
+    expect(snap!.pickups).toBeUndefined()
+    // The real guarantee: weapons only ever come from the spawn roll.
+    for (const name of Object.keys(MAPS) as (keyof typeof MAPS)[]) {
+      expect(MAPS[name].powerPickups, `${name} still has weapon pads`).toBeUndefined()
+    }
   })
 })
 

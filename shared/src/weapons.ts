@@ -48,10 +48,12 @@ export interface WeaponDef {
 }
 
 /**
- * Roster mimics Halo Infinite: a fixed utility pair every life (MA40 +
- * MK50), a niche tier on short-timer pads, and a power tier on long-timer
- * neutral pads. Time-to-kill is quoted against the full 70 shield + 30
- * health pool, body-only and with head cleanup under the shield gate.
+ * Roster is named after Halo Infinite's. There are no map pads any more --
+ * every gun below is drawn by the random spawn roll (see rollLoadout), so the
+ * "Spawn primary" / "Niche pad" / "Power pad" tier labels on each entry are
+ * balance INTENT (how strong the gun is meant to feel), not where it comes
+ * from. Time-to-kill is quoted against the full 70 shield + 30 health pool,
+ * body-only and with head cleanup under the shield gate.
  */
 export const WEAPONS: Record<WeaponId, WeaponDef> = {
   pulse_smg: {
@@ -248,34 +250,30 @@ export const WEAPON_POOL: WeaponId[] = [
   'commando',
 ]
 
-/** Halo has no loadouts, so neither does this. Every player and every bot
- * starts every life with the same utility pair, and map pads are the only
- * variable in a fight. The old 2-of-10 roll could hand one player an Energy
- * Sword while their opponent got a Needler, which is the single most un-Halo
- * thing the build did -- and it regularly respawned bots with two weapons
- * that could not answer at 20m.
+// No trailing null: sandbox loadouts always roll a piece of equipment.
+const EQUIPMENT_OPTIONS: EquipmentId[] = ['grapple', 'repulsor', 'camo']
+
+/** Every life rolls two DIFFERENT weapons out of the full roster, players and
+ * bots alike. No fixed utility pair and no map pads: the spawn roll is the
+ * only way a weapon enters a fight, which is why the roll draws from all of
+ * WEAPON_POOL -- excluding the power tier here would make the sniper, rocket,
+ * sword and hammer unreachable. Consequence, accepted deliberately: a life can
+ * start with two power melees and no answer at 20m.
  *
  * Grenades are fixed at 2 frag: FRAG_DAMAGE 90 over FRAG_RADIUS 4 strips a
  * full shield without ever killing from full, so every spawn carries a
  * shield-stripper that still needs a gun to finish.
- *
- * `rand` stays live for the equipment roll, so the signature and return
- * shape are unchanged and no caller moves. Equipment remains a spawn roll
- * rather than a map pickup because map.powerPickups is typed to WeaponId --
- * a schema change, not a tune (see docs/DECISIONS.md).
  */
-export const SPAWN_WEAPONS: [WeaponId, WeaponId] = ['pulse_smg', 'sidearm']
-
-// No trailing null: sandbox loadouts always roll a piece of equipment.
-const EQUIPMENT_OPTIONS: EquipmentId[] = ['grapple', 'repulsor', 'camo']
-
 export function rollLoadout(rand: () => number): {
   weapons: [WeaponId, WeaponId]
   grenades: { frag: number; mag: number }
   equipment: EquipmentId | null
 } {
+  const pool = [...WEAPON_POOL]
+  const first = pool.splice(Math.floor(rand() * pool.length), 1)[0]
+  const second = pool[Math.floor(rand() * pool.length)]
   return {
-    weapons: [...SPAWN_WEAPONS],
+    weapons: [first, second],
     grenades: { frag: 2, mag: 0 },
     equipment: EQUIPMENT_OPTIONS[Math.floor(rand() * EQUIPMENT_OPTIONS.length)],
   }

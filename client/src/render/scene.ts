@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { EYE_HEIGHT } from '@riftlane/shared'
 import { FOG_COLOR, MaterialLibrary } from './materials'
 import { buildSky } from './sky'
@@ -16,10 +17,17 @@ const NEAR = 0.05
 const FAR = 500
 const FOG_NEAR = 34
 const FOG_FAR = 260
-// Bumped from 1.15 -- measured median scene luminance was 10/255 with 77% of
-// pixels under 20/255, crushing the authored world kit toward black outside
-// direct sun hits. Raised alongside the hemisphere/bounce intensities below.
-const EXPOSURE = 1.55
+// Was 1.15, then 1.55 to rescue a measured median scene luminance of 10/255
+// (77% of pixels under 20/255). 1.55 fixed the crush by blowing the lit
+// surfaces out instead: base platforms and rim trim clipped to near-white
+// against near-black walls, which is the bimodal histogram that reads as
+// "cheap" no matter how good the geometry is. The environment map added below
+// is the real fix for the dark end, so this comes back down to keep the
+// highlights inside range.
+const EXPOSURE = 1.3
+// Fill only. Above ~0.6 the neutral room bake starts flattening the dusk
+// key/rim authoring into an evenly-lit studio look.
+const ENV_INTENSITY = 0.45
 const SHADOW_EXTENT = 46
 const NARROW_VIEWPORT = 760
 
@@ -91,6 +99,23 @@ export function createScene(canvas: HTMLCanvasElement): SceneCtx {
 
   const scene = new THREE.Scene()
   scene.fog = new THREE.Fog(FOG_COLOR, FOG_NEAR, FOG_FAR)
+
+  // Environment map. Nearly every material in this game is a metal
+  // (MaterialLibrary.hull is metalness 0.55, trim is 0.85) and none of them had
+  // anything to reflect, which is what made lit surfaces read as flat plastic
+  // and unlit ones fall to black -- the crushed-blacks measurement that pushed
+  // EXPOSURE to 1.55 was a symptom of this, not of the lights being too dim.
+  // A neutral PMREM bake gives metals an ambient response, so the mid-tones
+  // come back without blowing the highlights out further.
+  //
+  // Cost: one bake at match start (a handful of ms), one cube texture. Nothing
+  // per frame. Kept at a fraction of full intensity so the dusk key/rim
+  // lighting still authors the mood -- this fills, it does not light.
+  const pmrem = new THREE.PMREMGenerator(renderer)
+  const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04)
+  scene.environment = envRT.texture
+  scene.environmentIntensity = ENV_INTENSITY
+  pmrem.dispose()
 
   const materials = new MaterialLibrary()
   const sky = buildSky(materials.glowTex)
@@ -164,6 +189,8 @@ export function createScene(canvas: HTMLCanvasElement): SceneCtx {
       delete window.__riftlaneRenderInfo
       scene.remove(sky)
       disposeObject3D(sky)
+      scene.environment = null
+      envRT.dispose()
       materials.dispose()
       renderer.dispose()
     },

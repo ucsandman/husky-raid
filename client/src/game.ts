@@ -13,6 +13,7 @@ import {
 } from '@riftlane/shared'
 import { createScene, type SceneCtx } from './render/scene'
 import { buildMap } from './render/mapMesh'
+import { syncFlags } from './render/flag'
 import { makeSoldier, updateSoldier } from './render/soldier'
 import { EffectsSystem } from './render/effects'
 import { buildViewmodel, setViewmodelFlare, setViewmodelReload } from './render/viewmodel'
@@ -22,7 +23,7 @@ import type { InputManager } from './input'
 import type { Net } from './net'
 import { ClientPrediction } from './predict'
 import { Hud } from './ui/hud'
-import { audioEngine, type SoundName } from './audio'
+import { audioEngine } from './audio'
 import { announcer } from './announcer'
 import { store } from './state'
 
@@ -62,20 +63,6 @@ const HIT_SPARK_MIN_INTERVAL = 0.06
 // snapshots in playSnapshotAudio() below.
 const TELEPORT_JUMP_DIST = 5 // meters/snapshot; teleporter endpoints in maps/*.ts are 20-36m apart, normal per-snapshot travel is well under 2m
 const LAUNCH_VEL_Y_THRESHOLD = 8.5 // just above JUMP_SPEED (8); launchpad velocities in maps/*.ts start at 9
-
-const WEAPON_SOUND: Record<WeaponId, SoundName> = {
-  pulse_smg: 'shot_smg',
-  sidearm: 'shot_smg',
-  triad_rifle: 'shot_rifle',
-  scattergun: 'shot_rifle',
-  railspike: 'shot_rail',
-  cinderlob: 'shot_boom',
-  boomtube: 'shot_boom',
-  swarm_pod: 'shot_boom',
-  arc_blade: 'blade_lunge',
-  grav_maul: 'melee_swing',
-  commando: 'shot_rifle',
-}
 
 /** Structural shim for the power-pickup pad renderer that render/effects.ts
  * gains in stage 3. Declared here so the single call site below compiles
@@ -444,9 +431,15 @@ export class Game {
     for (const ev of msg.events) {
       if (ev.type === 'shot') {
         const shooter = msg.players.find((p) => p.id === ev.playerId)
-        audioEngine.play(WEAPON_SOUND[ev.weapon], shooter ? { pos: eyePos(shooter.pos), listener } : undefined)
+        audioEngine.playWeapon(ev.weapon, shooter ? { pos: eyePos(shooter.pos), listener } : undefined)
       } else if (ev.type === 'explosion') {
         audioEngine.play('explosion', { pos: ev.pos, listener })
+      } else if (ev.type === 'melee_swing' && ev.weapon === null) {
+        // Unarmed melee was silent: a power-melee swing emits a paired 'shot'
+        // event (handled above), but a bare beatdown emits only this one, so
+        // nothing ever played the melee_swing recipe.
+        const swinger = msg.players.find((p) => p.id === ev.playerId)
+        audioEngine.play('melee_swing', swinger ? { pos: eyePos(swinger.pos), listener } : undefined)
       } else if (ev.type === 'kill') {
         const victim = msg.players.find((p) => p.id === ev.victimId)
         const at = victim ? { pos: eyePos(victim.pos), listener } : undefined
@@ -691,6 +684,10 @@ export class Game {
       // the power-weapon pads. This is its only call site -- keep it. The
       // cast is a shim for the window before that method exists. ---
       ;(effects as unknown as PickupPadSync).syncPickups?.(this.map?.powerPickups ?? [], snap.pickups ?? [])
+
+      // Both flags follow the server every frame: on their stand, lying where
+      // they were dropped, or hidden because a carrier is wearing one.
+      syncFlags(this.mapGroup, snap.flags)
     }
 
     // A pad player never clicks, so never holds pointer lock -- gating the

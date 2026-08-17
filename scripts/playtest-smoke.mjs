@@ -33,7 +33,7 @@ const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } })
 // Tap the socket so every assertion is about what the SERVER actually saw,
 // not about what the client believes it sent.
 await ctx.addInitScript(() => {
-  window.__probe = { sent: [], snaps: [], myId: null, lockErrors: 0 }
+  window.__probe = { sent: [], snaps: [], shots: [], myId: null, lockErrors: 0 }
   const Orig = window.WebSocket
   const Wrapped = function (...args) {
     const ws = new Orig(...args)
@@ -51,6 +51,14 @@ await ctx.addInitScript(() => {
         if (m.t === 'match_start') window.__probe.myId = m.yourId
         if (m.t === 'snapshot' && window.__probe.myId) {
           window.__probe.phase = m.phase ?? 'playing'
+          // Weapon-sandbox facts, read off the wire rather than the HUD:
+          // every player's current pair, and whether the server sent a
+          // `pickups` array at all (it only does for a map with weapon pads).
+          window.__probe.loadouts = m.players.map((p) => p.weapons)
+          window.__probe.hasPickupsField = 'pickups' in m
+          for (const e of m.events ?? []) {
+            if (e.type === 'shot' && e.playerId === window.__probe.myId) window.__probe.shots.push(e.weapon)
+          }
           const me = m.players.find((p) => p.id === window.__probe.myId)
           if (me) window.__probe.snaps.push({ pos: me.pos, vel: me.vel, yaw: me.yaw, ammo: me.ammo, alive: me.alive })
         }
@@ -65,7 +73,20 @@ await ctx.addInitScript(() => {
 })
 
 const page = await ctx.newPage()
-const reset = () => page.evaluate(() => { window.__probe.sent.length = 0; window.__probe.snaps.length = 0 })
+const reset = () => page.evaluate(() => { window.__probe.sent.length = 0; window.__probe.snaps.length = 0; window.__probe.shots.length = 0 })
+
+// Weapon SFX are real files now, so "the gun sounds right" starts with "the
+// browser actually fetched and decoded the file". Failures here are silent by
+// design in audio.ts (a 404 falls back to the synth beep), which is exactly
+// why the check has to live out here in the network log.
+const sfxResponses = []
+const consoleErrors = []
+page.on('response', (r) => {
+  if (/\/assets\/audio\/sfx\/(weapon_|explosion)/.test(r.url())) sfxResponses.push({ url: r.url(), status: r.status() })
+})
+page.on('console', (m) => {
+  if (m.type() === 'error') consoleErrors.push(m.text())
+})
 
 /**
  * Blocks until the local player is alive, then lets one more snapshot land.
@@ -152,12 +173,17 @@ try {
       before,
       after: window.__probe.snaps.at(-1)?.ammo?.[0] ?? null,
       onWire: window.__probe.sent.some((i) => i.fire === true),
+      shots: [...window.__probe.shots],
       survived: window.__probe.snaps.every((s) => s.alive),
     }), ammoBefore)
     if (fired.survived) break
   }
-  check('holding fire consumes ammo', fired.onWire && fired.after !== null && fired.before !== null && fired.after < fired.before,
-    `ammo ${fired.before} -> ${fired.after}`)
+  // Asserted on the server's own 'shot' events, not on ammo: spawn loadouts
+  // are random now, so slot 0 can hold a power melee, and those have magSize 1
+  // and never decrement. Ammo was reading 1 -> 1 for a sword and failing a
+  // gun that fired perfectly well.
+  check('holding fire makes the server fire the gun', fired.onWire && fired.shots.length > 0,
+    `${fired.shots.length} shots (${[...new Set(fired.shots)].join(',') || 'none'}), ammo ${fired.before} -> ${fired.after}`)
 
   // --- aim down sights --------------------------------------------------
   // Same 3-attempt survival retry as the fire check above, and for the same
@@ -196,6 +222,29 @@ try {
   const afterUnlock = await page.evaluate(() => window.__probe.sent.filter((i) => i.forward === 1).length)
   await page.keyboard.up('w')
   check('keyboard still registers with pointer lock released', afterUnlock > 3, `${afterUnlock} forward inputs`)
+
+  // --- random spawn loadouts, and nothing to pick up --------------------
+  // 8 players x 2 slots drawn from an 11-gun roster: a fixed spawn pair shows
+  // up as exactly 2 distinct ids across the whole lobby, which is what this
+  // separates. Slots must also differ from each other within a player.
+  const sandbox = await page.evaluate(() => ({
+    loadouts: window.__probe.loadouts,
+    hasPickupsField: window.__probe.hasPickupsField,
+  }))
+  const distinct = new Set(sandbox.loadouts.flat())
+  check('spawn loadouts are randomised across the lobby', distinct.size > 2,
+    `${distinct.size} distinct weapons over ${sandbox.loadouts.length} players: ${[...distinct].join(',')}`)
+  check('no player spawns holding the same gun twice', sandbox.loadouts.every((w) => w[0] !== w[1]),
+    JSON.stringify(sandbox.loadouts))
+  // The server omits `pickups` entirely when the map has no weapon pads, so
+  // its absence is the wire-level proof that the map carries no weapons.
+  check('map carries no weapon pads', sandbox.hasPickupsField === false)
+
+  // --- weapon audio is sampled, not synthesized -------------------------
+  const badSfx = sfxResponses.filter((r) => r.status !== 200)
+  check('generated weapon SFX load', sfxResponses.length >= 12 && badSfx.length === 0,
+    `${sfxResponses.length} requests, ${badSfx.length} non-200${badSfx.length ? `: ${JSON.stringify(badSfx)}` : ''}`)
+  check('no console errors during the match', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
 } finally {
   await browser.close()
 }

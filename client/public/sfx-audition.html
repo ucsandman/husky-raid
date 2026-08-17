@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RIFTLANE weapon SFX audition</title>
+    <style>
+      :root {
+        --bg: #0d1014;
+        --panel: #151a21;
+        --border: #262d38;
+        --text: #e6ebf2;
+        --dim: #8b97a8;
+        --cobalt: #4d7dff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 2rem 1.25rem 4rem;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.5 ui-sans-serif, system-ui, sans-serif;
+      }
+      main { max-width: 760px; margin: 0 auto; }
+      h1 { font-size: 1.35rem; margin: 0 0 0.35rem; letter-spacing: 0.01em; }
+      p.lede { color: var(--dim); margin: 0 0 1.5rem; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border); }
+      th { color: var(--dim); font-weight: 500; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; }
+      td.gun { font-weight: 600; }
+      td.id, td.rof { color: var(--dim); font-family: ui-monospace, monospace; font-size: 0.85rem; }
+      button {
+        font: inherit;
+        color: var(--text);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 0.3rem 0.75rem;
+        cursor: pointer;
+      }
+      button:hover { border-color: var(--cobalt); }
+      button:active { transform: translateY(1px); }
+      .actions { display: flex; gap: 0.4rem; }
+      footer { margin-top: 2rem; color: var(--dim); font-size: 0.85rem; }
+      code { background: var(--panel); padding: 0.1rem 0.35rem; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Weapon SFX audition</h1>
+      <p class="lede">
+        Every gun's generated sample, plus the rocket explosion. <strong>Burst</strong> plays it at that weapon's real
+        rate of fire, which is the check that matters: a sample that sounds great alone can turn to mud at 10 rounds a
+        second.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Gun</th><th>Sample</th><th>Rate</th><th></th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <footer>
+        Files come from <code>client/public/assets/audio/sfx/</code>. Regenerate one with
+        <code>FORCE=1 ONLY=weapon_railspike bash scripts/gen-weapon-sfx.sh</code>, or re-tune length and level in that
+        script's table and re-run it to re-master from the cached raw audio.
+      </footer>
+    </main>
+    <script>
+      // rof matches shared/src/weapons.ts. Kept here by hand because this page
+      // is plain static HTML the server hands over with no bundling.
+      const SOUNDS = [
+        { id: 'weapon_pulse_smg', gun: 'MA40 Assault Rifle', rof: 10 },
+        { id: 'weapon_sidearm', gun: 'MK50 Sidekick', rof: 7.5 },
+        { id: 'weapon_triad_rifle', gun: 'BR75 Battle Rifle', rof: 3 },
+        { id: 'weapon_commando', gun: 'VK78 Commando', rof: 6 },
+        { id: 'weapon_scattergun', gun: 'CQS48 Bulldog', rof: 1.5 },
+        { id: 'weapon_swarm_pod', gun: 'Needler', rof: 7.5 },
+        { id: 'weapon_cinderlob', gun: 'Cindershot', rof: 1.25 },
+        { id: 'weapon_railspike', gun: 'S7 Sniper Rifle', rof: 1 },
+        { id: 'weapon_boomtube', gun: 'M41 SPNKR', rof: 0.6 },
+        { id: 'weapon_arc_blade', gun: 'Energy Sword', rof: 1 },
+        { id: 'weapon_grav_maul', gun: 'Gravity Hammer', rof: 0.75 },
+        { id: 'explosion', gun: 'Rocket / Cindershot impact', rof: null },
+      ]
+
+      // A fresh element per shot: one element cannot overlap itself, and
+      // overlapping tails are exactly what the burst test is listening for.
+      const play = (id) => {
+        const a = new Audio(`assets/audio/sfx/${id}.mp3`)
+        a.play()
+      }
+
+      const burst = (id, rof) => {
+        const gap = 1000 / rof
+        const shots = Math.min(8, Math.max(3, Math.round(rof * 1.2)))
+        for (let i = 0; i < shots; i++) setTimeout(() => play(id), i * gap)
+      }
+
+      document.getElementById('rows').innerHTML = SOUNDS.map(
+        (s) => `<tr>
+          <td class="gun">${s.gun}</td>
+          <td class="id">${s.id}.mp3</td>
+          <td class="rof">${s.rof ? `${s.rof}/s` : '--'}</td>
+          <td><div class="actions">
+            <button data-play="${s.id}">Single</button>
+            ${s.rof ? `<button data-burst="${s.id}" data-rof="${s.rof}">Burst</button>` : ''}
+          </div></td>
+        </tr>`,
+      ).join('')
+
+      document.addEventListener('click', (ev) => {
+        const el = ev.target.closest('button')
+        if (!el) return
+        if (el.dataset.play) play(el.dataset.play)
+        else if (el.dataset.burst) burst(el.dataset.burst, Number(el.dataset.rof))
+      })
+    </script>
+  </body>
+</html>

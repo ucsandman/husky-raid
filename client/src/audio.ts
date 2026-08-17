@@ -1,9 +1,15 @@
-import type { Vec3 } from '@riftlane/shared'
+import type { Vec3, WeaponId } from '@riftlane/shared'
 
 /**
  * Every sound RIFTLANE plays, synthesized (oscillators/noise + hand-rolled
- * envelopes/filters), never loaded from a file. See synth() below for the
- * one-line recipe behind each name.
+ * envelopes/filters). See synth() below for the one-line recipe behind each
+ * name.
+ *
+ * Synthesis is no longer what you hear for weapons: a 700Hz square wave is a
+ * beep, not a rifle, and a falling sine chirp is a cartoon laser, not a
+ * sniper. Every gun and the explosion now play a generated sample (see
+ * WEAPON_SFX / SAMPLE_URLS below) and these recipes are the fallback that
+ * covers the first few frames, a 404, or a decode failure.
  */
 export type SoundName =
   | 'shot_smg'
@@ -101,6 +107,39 @@ const FILE_SOUND_URLS: Record<FileSoundName, string> = {
   flag_capture_stinger: '/assets/audio/sfx/flag_capture_stinger.mp3',
 }
 
+/**
+ * One generated sample per gun, plus the synth recipe that stands in until it
+ * loads. Every weapon has its OWN voice now -- the old mapping pushed eleven
+ * named Halo guns through four recipes, so the Bulldog, the BR and the
+ * Commando were literally the same beep.
+ *
+ * Mastering (length, level) is baked into the files by
+ * scripts/gen-weapon-sfx.sh, which also holds the prompt for each one: the
+ * MA40 sample is trimmed to 300ms because it fires every 100ms, and levels
+ * are set per weapon there rather than here, since this engine has no
+ * per-sound gain.
+ */
+const WEAPON_SFX: Record<WeaponId, { url: string; fallback: SoundName }> = {
+  pulse_smg: { url: '/assets/audio/sfx/weapon_pulse_smg.mp3', fallback: 'shot_smg' },
+  sidearm: { url: '/assets/audio/sfx/weapon_sidearm.mp3', fallback: 'shot_smg' },
+  triad_rifle: { url: '/assets/audio/sfx/weapon_triad_rifle.mp3', fallback: 'shot_rifle' },
+  commando: { url: '/assets/audio/sfx/weapon_commando.mp3', fallback: 'shot_rifle' },
+  scattergun: { url: '/assets/audio/sfx/weapon_scattergun.mp3', fallback: 'shot_rifle' },
+  swarm_pod: { url: '/assets/audio/sfx/weapon_swarm_pod.mp3', fallback: 'shot_boom' },
+  cinderlob: { url: '/assets/audio/sfx/weapon_cinderlob.mp3', fallback: 'shot_boom' },
+  railspike: { url: '/assets/audio/sfx/weapon_railspike.mp3', fallback: 'shot_rail' },
+  boomtube: { url: '/assets/audio/sfx/weapon_boomtube.mp3', fallback: 'shot_boom' },
+  arc_blade: { url: '/assets/audio/sfx/weapon_arc_blade.mp3', fallback: 'blade_lunge' },
+  grav_maul: { url: '/assets/audio/sfx/weapon_grav_maul.mp3', fallback: 'melee_swing' },
+}
+
+/** Generated samples that REPLACE a synth sound wherever play() is called,
+ * with no call-site change. Weapons are not in here -- they route through
+ * playWeapon() because they key off WeaponId, not SoundName. */
+const SAMPLE_URLS: Partial<Record<SoundName, string>> = {
+  explosion: '/assets/audio/sfx/explosion.mp3',
+}
+
 /** Beyond this distance a positional sound is inaudible and skipped entirely. */
 const MAX_DISTANCE = 40
 
@@ -182,6 +221,10 @@ class AudioEngine {
     // fallback, so they're likely ready by the time a call site actually
     // needs one (match start, a multikill, a flag capture).
     for (const url of Object.values(FILE_SOUND_URLS)) this.loadUrl(url)
+    // Same for the weapon samples: ~170KB total, and the first trigger pull
+    // usually lands within a second of the gesture that ran init().
+    for (const sfx of Object.values(WEAPON_SFX)) this.loadUrl(sfx.url)
+    for (const url of Object.values(SAMPLE_URLS)) this.loadUrl(url)
   }
 
   /** Wired to settings.volume (state.ts, persisted to localStorage). Live:
@@ -352,9 +395,18 @@ class AudioEngine {
   }
 
   play(name: SoundName, opts?: PlayOpts): void {
+    const url = SAMPLE_URLS[name]
+    if (url && this.playUrl(url, opts)) return
     const buffer = this.buffers.get(name)
     if (!buffer) return
     this.playBuffer(buffer, opts)
+  }
+
+  /** Fires `weapon`'s generated sample, dropping to its synth recipe while
+   * the file is still loading (or forever, if it never loads). */
+  playWeapon(weapon: WeaponId, opts?: PlayOpts): void {
+    const sfx = WEAPON_SFX[weapon]
+    if (!this.playUrl(sfx.url, opts)) this.play(sfx.fallback, opts)
   }
 
   /** Fetch+decode `url` in the background if it hasn't been tried yet

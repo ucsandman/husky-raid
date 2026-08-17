@@ -104,28 +104,8 @@ export const gutter: GameMap = {
     { pos: { x: 1, y: 0, z: 0 }, radius: 1, velocity: { x: 0, y: 9.859, z: 10.954 } },
   ],
   teleporters: [{ a: { x: -5, y: 0, z: -18 }, b: { x: -5, y: 0, z: 18 }, radius: 1 }],
-  // One boomtube pad on the east rail at mid, NOT at the origin. PICKUP_RADIUS
-  // is 1.4 and both launch pads sit at x = +-1, z = 0 with a 1m trigger
-  // radius, so a pad at the origin would be inside the launch pads' own
-  // approach: node 4 of the waypoint graph IS (0,0,0), meaning every bot
-  // heading for a pad -- and every player stepping on one -- would collect
-  // the power weapon for free on the way. z = 0 keeps it exactly 26m from
-  // both flag stands (dead even for both teams); the east rail balances the
-  // teleporter alcoves, which are both on the west rail.
-  // Point-symmetric set (rotate180, matching this map's cover layout). The
-  // two power weapons face each other across the mid line at z = 0, so both
-  // are exactly equidistant from both bases and neither sits in a flag room
-  // -- a one-hit melee that spawns where a defender already stands turns a
-  // flag into a camp. gutter takes the Gravity Hammer rather than the Energy
-  // Sword: one power melee per map, and the hammer's shorter reach suits a
-  // lane this tight.
-  powerPickups: [
-    { pos: { x: 5, y: 0, z: 0 }, weapon: 'boomtube', respawnSec: 150 },
-    { pos: { x: -5, y: 0, z: 0 }, weapon: 'grav_maul', respawnSec: 150 },
-    // On the rails, mid-lane, where the cover run already takes bots.
-    { pos: { x: -5, y: 0, z: -12 }, weapon: 'scattergun', respawnSec: 45 },
-    { pos: { x: 5, y: 0, z: 12 }, weapon: 'scattergun', respawnSec: 45 },
-  ],
+  // No powerPickups: weapons come from the random spawn roll only, so there
+  // is nothing to pick up anywhere on the map (see rollLoadout).
   spawns: [
     [
       { x: -3, y: 0.5, z: -27 },

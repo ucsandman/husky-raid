@@ -2,6 +2,54 @@
 
 Reusable debugging lessons for RIFTLANE. Newest first, short entries.
 
+## 2026-08-17: one-liners
+
+- The whole arena looked like it was dusted with stars and washed with an orange
+  band: walls, bases and floor all had sky painted over them. Root cause: the
+  sky's star shells and horizon band were `transparent: true` AND
+  `depthTest: false`. Transparent materials render in a queue that runs AFTER
+  all opaque geometry, so turning off the depth test does not put them behind
+  the world -- it puts them on top of it, and a negative `renderOrder` only
+  sorts them within the transparent queue. Prevention: only an OPAQUE backdrop
+  (the dome) may skip the depth test. Anything transparent keeps depthTest on
+  and relies on sitting inside `camera.far`.
+- Holding ADS flickered the zoom in and out ~20x/second. Root cause:
+  `Predictor.reconcile` blanket-reset `state.scoped = false` alongside the
+  sprint/slide resets, but snapshots arrive at 20Hz against 30Hz input ticks,
+  so most reconciles have an empty pending buffer and nothing re-derives
+  `scoped` until the next input tick -- the camera FOV lerped hipfire-ward and
+  back every snapshot. Prevention: reconcile may only reset state that
+  ACCUMULATES over ticks (timers, sprint, slide). State that is a pure function
+  of the newest input is already correct; clearing it invents a wrong value.
+- `python launch.py` printed "RIFTLANE running at http://localhost:8080" and
+  opened a browser while its own server died of EADDRINUSE. Root cause: the
+  readiness probe was a bare HTTP GET, so a RIFTLANE server orphaned from an
+  earlier session (started 03:08, serving that session's sim code) answered for
+  it. Prevention: launch.py now refuses a busy port up front and names the PID
+  holding it. A readiness probe that cannot tell your process from a stranger's
+  is not a readiness probe.
+- Adding a file to `client/public` did not trigger a rebuild: launch.py's
+  staleness check watched `client/src`, `client/index.html` and `shared/src`
+  only, while Vite copies `client/public` into `dist` verbatim. The SFX
+  audition page was missing from the served build. Prevention: `client/public`
+  is in the mtime check now.
+- Weapon audio shipped as oscillator synthesis and Wes heard it as a child's
+  game / "pew pew". Root cause: `shot_rifle` was a 700Hz square wave and
+  `shot_rail` a falling sine chirp, and four recipes covered eleven named guns.
+  Prevention: real samples per gun, with the synth kept only as the fallback --
+  hand-rolled synthesis is fine for a UI tick, never for a gun.
+- Randomising spawn loadouts broke `npm run playtest`'s fire check, which read
+  `ammo[0]` before and after a burst: a random roll can put a power melee in
+  slot 0, and those have `magSize` 1 and never decrement, so a sword read as a
+  gun that never fired. Prevention: assert the server's own `shot` event, not a
+  side effect that only some weapons have.
+- Two seeded bot-match canaries went red on the same change. They were not
+  broken by it: gutter seed 42 and bastion seed 77 were single samples of a
+  metric whose variance the change doubled (kills 153 -> 309), and baseline
+  bastion seed 1 already produced zero captures before the change. Prevention:
+  a canary over a noisy metric asserts per-seed only what one run shows
+  reliably, and aggregates the rest.
+
 ## 2026-08-17: `git worktree remove --force` deleted the main working tree
 
 One-line entry. To bisect a bot regression I made a worktree in `$TEMP` and

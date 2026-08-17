@@ -1,6 +1,6 @@
 # RIFTLANE
 
-RIFTLANE is a browser-based 8-player capture-the-flag arena shooter, built as an original IP inspired by Husky Raid. Two teams of four fight across a small map, grappling and repulsor-jumping around cover, stealing the enemy flag, and capturing it at their own base. Movement is Halo-style: sprint, slide, clamber onto ledges mid-air, and forgiving jump timing. Everyone spawns with the same pair every life -- an MA40 Assault Rifle and an MK50 Sidekick -- so every fight starts from a known baseline, and the other nine weapons live on timed map pads worth fighting over: battle rifles and shotguns on short timers, the sniper, rockets and the power melee on long ones, always on the route between the bases rather than inside a flag room. Matches open with a short warmup countdown, respawns get a brief protection window, and three maps rotate: the tight lane of gutter, hairpin's U-bend, and bastion, a three-route arena about three times gutter's size. Quick Play lets you pick the bot difficulty. Carrying the flag costs you your gun -- carriers move at full speed but can only melee. Matches end at 3 captures or when the clock runs out.
+RIFTLANE is a browser-based 8-player capture-the-flag arena shooter, built as an original IP inspired by Husky Raid. Two teams of four fight across a small map, grappling and repulsor-jumping around cover, stealing the enemy flag, and capturing it at their own base. Movement is Halo-style: sprint, slide, clamber onto ledges mid-air, and forgiving jump timing. There are no weapons anywhere on the map: every life rolls two different guns out of the whole 11-weapon roster, so a spawn can hand you an MA40 and a Sidekick or a sniper and a rocket launcher, and reading what the other side is holding is the fight. Matches open with a short warmup countdown, respawns get a brief protection window, and three maps rotate: the tight lane of gutter, hairpin's U-bend, and bastion, a three-route arena about three times gutter's size. Quick Play lets you pick the bot difficulty. Carrying the flag costs you your gun -- carriers move at full speed but can only melee. Matches end at 3 captures or when the clock runs out.
 
 Fights are the Halo two-stage kill: strip the shield first, then finish. **Headshot multipliers only pay out once a target's shield is down**, so a fight is a rhythm rather than a race, and sparks tell you which stage you are in -- blue while you are chipping the shield, red once you are into health. The S7 Sniper Rifle is the one exception: it ignores the gate and one-shots a full-shield target through the head, which is what makes holding a long lane worth it. A beatdown landed inside a target's own rear arc kills outright. A motion tracker paints anyone moving nearby, an announcer calls the match, and the post-game carnage report hands out medals. Any empty human slots are filled by server-side bots, so a match can start (and keep running through a disconnect) with as few as one human player.
 
@@ -107,7 +107,7 @@ npm run typecheck # tsc project references across all three workspaces
 npm run playtest  # real browser, real match: are the controls actually alive?
 ```
 
-`npm run playtest` needs the server already running (`npm run start`, or set `RIFTLANE_URL`) and Playwright's Chromium (`npx playwright install chromium`). It joins a real match and checks the things unit tests structurally cannot see: that keys and mouse buttons reach the server, that holding fire consumes ammo, that right click scopes in, that losing pointer lock shows a resume prompt instead of silently killing every input, and that the keyboard still works once lock is gone. Every one of those was broken at some point while the unit suite was fully green.
+`npm run playtest` needs the server already running (`npm run start`, or set `RIFTLANE_URL`) and Playwright's Chromium (`npx playwright install chromium`). It joins a real match and checks the things unit tests structurally cannot see: that keys and mouse buttons reach the server, that holding fire makes the server fire the gun, that right click scopes in, that losing pointer lock shows a resume prompt instead of silently killing every input, that the keyboard still works once lock is gone, that spawn loadouts really are randomised across the lobby and the map serves no weapon pads, and that every generated weapon SFX file loads. Every one of those was broken at some point while the unit suite was fully green.
 
 It drives a live match against real bots, so it is not perfectly deterministic. The fire and scope checks wait for the player to be alive and retry a death mid-burst (see `waitAlive` in the script, and the 2026-08-14 entry in `docs/ERRORS.md` for why that matters). An occasional single-check failure is the test being noisy, not proof of a regression -- re-run it, and compare against the same number of runs on a clean tree before believing it.
 
@@ -115,17 +115,26 @@ The integration suite (`server/test/integration.test.ts`) boots a real server on
 
 ## Asset generation keys (optional)
 
-The game builds and runs with no environment variables. The keys in `.env.example` are only for regenerating AI-produced assets (announcer voice lines and stingers live in `client/public/assets/audio/`) with local tooling:
+The game builds and runs with no environment variables. The keys in `.env.example` are only for regenerating AI-produced assets (announcer voice lines, stingers and weapon SFX live in `client/public/assets/audio/`) with local tooling:
 
 ```bash
 cp .env.example .env   # then fill in real keys
 ```
 
-- `ELEVENLABS_API_KEY` -- announcer VO and SFX generation
+- `ELEVENLABS_API_KEY` -- announcer VO and weapon/explosion SFX generation
 - `GEMINI_API_KEY` -- 2D art references (logo, menu backgrounds)
 - `TRIPO_API_KEY` -- 3D model generation
 
-`.env` is gitignored; keys never ship to the client. If a generated audio file is missing at runtime, the announcer falls back to speech synthesis and the game keeps working.
+`.env` is gitignored; keys never ship to the client. If a generated audio file is missing at runtime, the announcer falls back to speech synthesis, weapons fall back to their synthesized recipe, and the game keeps working.
+
+### Weapon sounds
+
+```bash
+bash scripts/gen-weapon-sfx.sh          # generate only what's missing
+FORCE=1 ONLY=weapon_railspike bash scripts/gen-weapon-sfx.sh   # redo one gun
+```
+
+One generated sample per gun plus the explosion, mastered by that script (needs `ffmpeg` on PATH): its table holds the prompt, the kept length and the mix level for each one, and the raw generations under `assets/audio-raw/` are committed, so re-tuning length or level re-masters locally without spending API credits. Audition them at `/sfx-audition.html` on a running server (or open `client/public/sfx-audition.html` directly) -- **Burst** plays each gun at its real rate of fire, which is where a sample that sounds fine alone turns to mud.
 
 ## Project structure
 

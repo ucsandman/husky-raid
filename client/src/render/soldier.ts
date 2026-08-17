@@ -4,6 +4,7 @@ import { MOVE_SPEED, PLAYER_HEAD_CENTER_Y, SPRINT_SPEED_MULT } from '@riftlane/s
 import { decayTo } from './feel'
 import { TEAM_GLOW, type MaterialLibrary } from './materials'
 import { boxGeom, mergeMesh } from './worldKit'
+import { makeFlag } from './flag'
 
 const VISOR_COLOR = 0x7ff2ff
 const CAMO_OPACITY = 0.15
@@ -13,6 +14,9 @@ const CAMO_OPACITY = 0.15
 // panels reads almost black once it's only lit by the dusk hemisphere/sun --
 // this local, brighter pair is soldier-only so map decor is unaffected.
 const SOLDIER_ARMOR: Record<Team, number> = { 0: 0x5f8ce0, 1: 0xdb8a3f }
+/** Carried banner size relative to the objective flag. Small enough to clear
+ * the shoulders, big enough to read as a flag at 30m. */
+const BACK_FLAG_SCALE = 0.42
 const NAME_TEX_WIDTH = 256
 const NAME_TEX_HEIGHT = 64
 
@@ -69,7 +73,9 @@ interface SoldierData {
   legs: THREE.Group[]
   arms: THREE.Group[]
   flagProp: THREE.Group
-  flagMat: THREE.MeshStandardMaterial
+  /** The carried banner's cloth. Per-soldier, so a re-tint on pickup and the
+   * death-fade opacity both stay local to this soldier. */
+  flagMat: THREE.MeshPhysicalMaterial
   nameSprite: THREE.Sprite
   nameMat: THREE.SpriteMaterial
   lastName: string
@@ -227,34 +233,34 @@ function buildSegment(kit: Kit, mats: Mats, name: string, px: number, py: number
   return group
 }
 
-function makeFlagProp(mat: THREE.MeshStandardMaterial, poleMat: THREE.Material): THREE.Group {
-  const group = new THREE.Group()
-
-  const pole = new THREE.Mesh(cyl(0.028, 0.028, 1.0, 6), poleMat)
-  pole.position.set(0.1, 1.5, -0.36)
-  pole.rotation.x = -0.35
-  group.add(pole)
-
-  const cloth: THREE.BufferGeometry[] = []
-  for (let i = 0; i < 3; i++) {
-    const seg = new THREE.PlaneGeometry(0.19, 0.34)
-    seg.rotateY(Math.sin(i * 1.6) * 0.45)
-    seg.translate(0.29 + i * 0.19, 1.78 - i * 0.02, -0.44 + Math.sin(i * 1.6) * 0.05)
-    cloth.push(seg)
-  }
-  const banner = mergeMesh(cloth, mat, 'flagCloth')
-  if (banner) {
-    mat.side = THREE.DoubleSide
-    group.add(banner)
-  }
-
-  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.035, 6, 18), mat)
-  halo.rotation.x = -Math.PI / 2
-  halo.position.y = 2.05
-  group.add(halo)
-
+/**
+ * The stolen flag, strapped across the carrier's back: the same mast + rippling
+ * cloth the objective itself is built from (flag.ts), shrunk and canted back so
+ * it clears the shoulders.
+ *
+ * It replaced three static 19cm quads and a floating ring, which at any real
+ * distance read as a coloured smudge rather than as "that player has our flag"
+ * -- the single most important read in the mode.
+ */
+function makeCarriedFlag(lib: MaterialLibrary): { group: THREE.Group; cloth: THREE.MeshPhysicalMaterial } {
+  const group = makeFlag(lib, 0, BACK_FLAG_SCALE)
+  // Renamed off makeFlag's `flag<team>`: the world flags carry that name, and a
+  // scene-wide getObjectByName('flag0') would otherwise land on whichever of
+  // the eight soldiers' props came first in the graph. syncFlags only ever
+  // searches the map group, so nothing depends on this name -- but the
+  // collision cost real debugging time once and should not do so twice.
+  group.name = 'carriedFlag'
+  group.position.set(0.13, 0.92, -0.3)
+  group.rotation.set(-0.4, 0, 0.22)
+  const banner = group.getObjectByName('flagCloth') as THREE.Mesh
+  const cloth = banner.material as THREE.MeshPhysicalMaterial
+  // Per-instance material (makeFlag builds a fresh one per flag), so both the
+  // per-carry re-tint and the shared death-fade opacity are safe to write here.
+  // transparent is set only on THIS copy -- the world flags stay in the opaque
+  // queue, where they belong.
+  cloth.transparent = true
   group.visible = false
-  return group
+  return { group, cloth }
 }
 
 /**
@@ -365,14 +371,9 @@ export function makeSoldier(team: Team, lib: MaterialLibrary): THREE.Group {
   }
   group.add(upper)
 
-  const flagMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    emissive: 0xffffff,
-    emissiveIntensity: 1.1,
-    roughness: 0.5,
-    transparent: true,
-  })
-  const flagProp = makeFlagProp(flagMat, hullMat)
+  const carried = makeCarriedFlag(lib)
+  const flagProp = carried.group
+  const flagMat = carried.cloth
   group.add(flagProp)
 
   const nameMat = new THREE.SpriteMaterial({ transparent: true, depthTest: false })

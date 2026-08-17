@@ -79,28 +79,8 @@ export const hairpin: GameMap = {
   // walkway span and nowhere near the z=39 perimeter wall.
   launchPads: [{ pos: { x: 0, y: 0, z: 26 }, radius: 1, velocity: { x: 0, y: 13.145, z: 8.763 } }],
   teleporters: [{ a: { x: -10, y: 0, z: -10 }, b: { x: 10, y: 0, z: -10 }, radius: 1 }],
-  // One railspike pad on the U's centerline (x = 0, this map's mirror axis,
-  // so it is self-symmetric and exactly equidistant from both bases), at the
-  // mouth of the joint rather than at the joint's geometric midpoint (z ~
-  // 34.5). The high walkway (box 6) roofs the ENTIRE joint floor, x -12..12
-  // / z 30..39, and PICKUP_RADIUS is an XZ radius -- a pad anywhere under it
-  // would be collectable straight through the floor by whoever is standing
-  // on the walkway above. z = 28 sits 2m clear of the walkway footprint and
-  // 2m off the launch pad at (0,0,26), so it guards the route up without
-  // being free to anyone who takes it.
-  // Mirror-symmetric set (mirrorX: x -> -x, z fixed), matching this map's
-  // own cover layout rather than bastion's rotate180 -- both legs run the
-  // same z-direction here, so a pad on the x = 0 centre line is already
-  // self-symmetric at any z. The sniper keeps the joint mouth (the map's
-  // contested feature) and the hammer sits dead centre in the U's fill,
-  // equidistant from both bases and on the route between them.
-  powerPickups: [
-    { pos: { x: 0, y: 0, z: 28 }, weapon: 'railspike', respawnSec: 120 },
-    { pos: { x: 0, y: 0, z: 0 }, weapon: 'grav_maul', respawnSec: 150 },
-    // One per leg, so each team passes a BR without crossing the U.
-    { pos: { x: -10, y: 0, z: 0 }, weapon: 'triad_rifle', respawnSec: 30 },
-    { pos: { x: 10, y: 0, z: 0 }, weapon: 'triad_rifle', respawnSec: 30 },
-  ],
+  // No powerPickups: weapons come from the random spawn roll only, so there
+  // is nothing to pick up anywhere on the map (see rollLoadout).
   spawns: [
     [
       { x: -11, y: 0.5, z: -24 },

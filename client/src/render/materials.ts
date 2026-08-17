@@ -18,6 +18,7 @@ export const FOG_COLOR = 0x1d1c3c
 const PANEL_TEX_SIZE = 256
 const DECK_TEX_SIZE = 256
 const NOISE_TEX_SIZE = 128
+const CLOTH_TEX_SIZE = 128
 
 function makeCanvas(size: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D | null } {
   const canvas = document.createElement('canvas')
@@ -53,11 +54,18 @@ export function makePanelTexture(): THREE.CanvasTexture {
   ctx.fillStyle = '#39404f'
   ctx.fillRect(0, 0, size, size)
 
-  for (let i = 0; i < 2600; i++) {
+  // Tonal break-up, NOT dirt. This was 2600 specks at up to 0.09 alpha: the
+  // texture tiles once per 3 world metres, so on a 40m wall seen from 3m away
+  // every speck landed on several screen pixels and the whole surface read as
+  // grain -- it fought the authored panel seams and bolts below, which are the
+  // detail that actually says "built object". A tenth as many, at lower
+  // contrast, leaves variation without the dirt. The environment map added in
+  // scene.ts now carries most of the "no large surface reads flat" job.
+  for (let i = 0; i < 260; i++) {
     const v = hash01(i)
     const x = hash01(i * 3.1) * size
     const y = hash01(i * 7.7) * size
-    ctx.fillStyle = v > 0.5 ? `rgba(255,255,255,${0.05 * v})` : `rgba(0,0,0,${0.09 * v})`
+    ctx.fillStyle = v > 0.5 ? `rgba(255,255,255,${0.035 * v})` : `rgba(0,0,0,${0.05 * v})`
     ctx.fillRect(x, y, 1 + v * 2, 1 + v)
   }
 
@@ -107,9 +115,12 @@ export function makeDeckTexture(): THREE.CanvasTexture {
   ctx.fillStyle = '#2c3242'
   ctx.fillRect(0, 0, size, size)
 
-  for (let i = 0; i < 3000; i++) {
+  // Same call as makePanelTexture's speck pass -- the deck is the surface the
+  // player stares at most, and 3000 specks at 0.12 alpha read as a dirty floor
+  // rather than as tread plate.
+  for (let i = 0; i < 320; i++) {
     const v = hash01(i * 1.7)
-    ctx.fillStyle = v > 0.55 ? `rgba(190,205,235,${0.05 * v})` : `rgba(0,0,0,${0.12 * v})`
+    ctx.fillStyle = v > 0.55 ? `rgba(190,205,235,${0.04 * v})` : `rgba(0,0,0,${0.07 * v})`
     ctx.fillRect(hash01(i * 2.3) * size, hash01(i * 5.9) * size, 1 + v, 1 + v)
   }
 
@@ -174,6 +185,52 @@ export function makeSoftDotTexture(): THREE.CanvasTexture {
   return tex
 }
 
+/**
+ * The flag banner's woven field and its crest mark, both painted COLOURLESS:
+ * the field is a white cloth with a dark hoist band, a dark hem and a low
+ * contrast weave, and the crest is a black plate carrying a white
+ * stacked-chevron mark. flag.ts tints them per team (`color` x field,
+ * `emissive` x crest), which is what lets one pair of textures serve both
+ * teams AND be re-tinted live on a carrier's back.
+ */
+export function makeClothFieldTexture(): THREE.CanvasTexture {
+  const size = CLOTH_TEX_SIZE
+  const { canvas, ctx } = makeCanvas(size)
+  if (ctx) {
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, size, size)
+    ctx.fillStyle = 'rgba(0,0,0,0.4)'
+    ctx.fillRect(0, 0, size * 0.16, size)
+    ctx.fillRect(0, size * 0.84, size, size * 0.16)
+    ctx.fillStyle = 'rgba(0,0,0,0.07)'
+    for (let x = 0; x < size; x += 4) ctx.fillRect(x, 0, 2, size)
+  }
+  return finishTexture(canvas, true)
+}
+
+export function makeClothCrestTexture(): THREE.CanvasTexture {
+  const size = CLOTH_TEX_SIZE
+  const { canvas, ctx } = makeCanvas(size)
+  if (ctx) {
+    ctx.fillStyle = '#000000'
+    ctx.fillRect(0, 0, size, size)
+    ctx.strokeStyle = '#ffffff'
+    ctx.lineWidth = 7
+    ctx.lineCap = 'square'
+    // Outer two thirds only: the mast third stays plain, which is where a real
+    // flag's hoist band goes.
+    for (let i = 0; i < 3; i++) {
+      const x = size * (0.38 + i * 0.15)
+      ctx.beginPath()
+      ctx.moveTo(x, size * 0.3)
+      ctx.lineTo(x + size * 0.11, size * 0.5)
+      ctx.lineTo(x, size * 0.7)
+      ctx.stroke()
+    }
+  }
+  return finishTexture(canvas, true)
+}
+
 /** Four-point star with a hot core -- muzzle flashes. */
 export function makeFlareTexture(): THREE.CanvasTexture {
   const size = 128
@@ -235,6 +292,8 @@ export class MaterialLibrary {
   readonly deckTex = makeDeckTexture()
   readonly noiseTex = makeNoiseTexture()
   readonly glowTex = makeSoftDotTexture()
+  readonly clothFieldTex = makeClothFieldTexture()
+  readonly clothCrestTex = makeClothCrestTexture()
 
   private readonly owned: THREE.Material[] = []
 
@@ -382,5 +441,7 @@ export class MaterialLibrary {
     this.deckTex.dispose()
     this.noiseTex.dispose()
     this.glowTex.dispose()
+    this.clothFieldTex.dispose()
+    this.clothCrestTex.dispose()
   }
 }

@@ -653,6 +653,15 @@ export class EffectsSystem {
         const mat = (obj as THREE.Mesh).material as THREE.MeshBasicMaterial
         mat.opacity = 0.55 * (1 - cycle)
       }
+      // `cloth` is a flag banner: the ripple lives in its vertex shader, so
+      // all this has to do is advance that shader's clock (see flag.ts).
+      // onBeforeCompile runs once, hence the stashed shader rather than a
+      // material property.
+      if (data.cloth) {
+        const mat = (obj as THREE.Mesh).material as THREE.Material
+        const shader = mat.userData.shader as { uniforms: { uTime: { value: number } } } | undefined
+        if (shader) shader.uniforms.uTime.value = t
+      }
       if (data.spin) obj.rotation.y += dt * (data.spin as number)
       if (data.bob !== undefined) {
         obj.position.y = (data.bobBase as number) + Math.sin(t * 0.9 + obj.position.x) * (data.bob as number)

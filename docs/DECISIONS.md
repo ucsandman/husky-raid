@@ -2,6 +2,86 @@
 
 Durable architecture and design decisions for RIFTLANE. One dated entry each; alternatives rejected noted where relevant.
 
+## 2026-08-17: The flag is a real flag, and the stand is only its plinth
+
+The objective is now an actual flag -- mast, spear finial, and a cloth banner that ripples on a vertex-shader wave with a team crest woven into it (`client/src/render/flag.ts`). It is built per team by `mapMesh.ts` as a direct child of the map group, NOT as a child of the flag-stand beacon, because it has to leave the stand: `syncFlags()` reads `snapshot.flags[i]` every frame and puts it on its stand, lays it over where it was dropped, or hides it because a carrier is wearing it.
+
+The client previously drew no flag at all. The stand was an abstract beacon that never moved, and **a dropped flag was completely invisible** -- `snapshot.flags` was on the wire and never read, so the only way to find a loose flag was to run over it. That was a gameplay hole, not just a cosmetic one.
+
+Two parts of the old beacon were deleted rather than kept: the floating octahedron core and the 26m additive light pillar. They existed because the stand had to BE the landmark; with a flag planted in it they actively fought it (a spinning crystal hovered in front of the cloth, and the pillar plus the flag's own locator shaft washed the base area pale). The flag carries a much narrower 8m shaft instead, which travels with it and is what makes a dropped flag findable. Lesson worth keeping: an additive column wide enough to notice up close is wide enough to be an artifact -- buy visibility with opacity, not width.
+
+Cloth wave: `onBeforeCompile` on a `MeshPhysicalMaterial` so the banner keeps stock PBR lighting, fog and shadows, with the displacement AND the normal derived from one shared GLSL wave function (a normal derived from a different wave than the displacement is what makes cloth read as a painted card). Rejected: simulated cloth -- a per-frame solve for 140 vertices nobody can interact with. The field and crest textures are painted colourless and tinted at the material, so one pair on the `MaterialLibrary` serves both teams and the banner on a carrier's back can be re-tinted the instant they steal either flag.
+
+## 2026-08-17: Environment map instead of exposure, for the PBR mid-tones
+
+`createScene()` bakes a neutral `RoomEnvironment` PMREM into `scene.environment` at `environmentIntensity` 0.45, and `EXPOSURE` comes back down from 1.55 to 1.3.
+
+Nearly every material here is a metal (`MaterialLibrary.hull` is metalness 0.55, `trim` is 0.85) and none of them had anything to reflect, which is the documented reason metals read as flat grey. The earlier measurement -- median scene luminance 10/255, 77% of pixels under 20/255 -- was a symptom of that, and raising exposure to 1.55 traded crushed blacks for clipped whites: base platforms and rim trim blew to near-white against near-black walls. A bimodal histogram reads as cheap no matter how good the geometry is. The env map fills the dark end so the exposure crank is not needed.
+
+This does not break the 2026-08-14 "procedural-only, zero external assets" rule: `RoomEnvironment` is authored from Three.js primitives in the addons, so there is still no download step and no credentials. Cost is one PMREM bake per match and one cube texture; nothing per frame. Kept at 0.45 because above ~0.6 the neutral bake starts flattening the authored dusk key/rim lighting into an evenly-lit studio look. The render target is disposed with the scene.
+
+Same pass: `makePanelTexture`/`makeDeckTexture` dropped from 2600/3000 random specks to 260/320 at lower contrast. At one tile per 3 world metres a 40m wall seen from 3m put every speck on several screen pixels, so the surface read as dirt and drowned out the authored panel seams and bolts -- the detail that actually says "built object". The env map now carries most of the "no large surface reads flat" job those specks were doing.
+
+## 2026-08-17: Random spawn loadouts, and no weapons on the map at all
+
+Reverses the "fixed spawn pair" half of the 2026-08-15 sandbox entry below, on
+Wes's call. Every life rolls two DIFFERENT weapons out of the full
+`WEAPON_POOL` (`rollLoadout`), and all three maps dropped their `powerPickups`
+tables, so the spawn roll is the only way a weapon enters a fight.
+
+The roll deliberately includes the power tier. Excluding it would be the safer
+balance choice, but with no pads left it would also make the sniper, rocket,
+sword and hammer unreachable -- five of eleven guns would be dead code.
+Accepted consequence: a life can start with two power melees and no answer at
+20m, which is exactly what the 08-15 entry called out as the old roll's flaw.
+
+The pickup machinery (`stepPickups`, the `pickups` snapshot field,
+`EffectsSystem.syncPickups`, the pad holograms) is kept, not deleted. It is
+data-driven off `map.powerPickups`, costs one early return per tick with no
+pads, and `shared/test/sim.test.ts` still exercises it against an injected pad
+-- so pads can come back as map data alone. `server/test/match.test.ts` now
+pins the other side of that: no map ships pads, and the snapshot omits
+`pickups` entirely.
+
+Measured cost, gutter seed 42: kills per match 153 -> 309, and the seeded
+8-bot match stopped reaching a decisive 3 captures inside the clock. Lethality
+roughly doubles when everyone carries power weapons, so flag carriers die more
+and captures slow down. The two bot-match canaries in
+`server/test/brain.test.ts` now run seeds 1..3 and assert per-seed that a
+runner reaches the enemy flag (the nav property one match shows reliably) and
+only in aggregate that offense scores -- pinning one seed was measuring the
+seed, not the bots.
+
+## 2026-08-17: Weapons play generated samples; synthesis is the fallback
+
+Every gun and the explosion now play an ElevenLabs-generated sample; the
+hand-written oscillator recipes in `audio.ts` stay as the fallback for the
+frames before a file loads, and for a 404 or decode failure. Wes's report was
+that the game sounded like a child's toy, and the code agreed: `shot_rifle`
+was a 700Hz square wave and `shot_rail` a falling sine chirp, i.e. a beep and
+a cartoon laser, with eleven named Halo guns sharing four recipes.
+
+Per-weapon files, not per-category: the Bulldog, the BR and the Commando were
+literally the same sound before. Routing is `audioEngine.playWeapon(weaponId)`
+keyed off `WEAPON_SFX` in `audio.ts`, so weapon-to-sound knowledge left
+`game.ts` entirely; `SAMPLE_URLS` does the same for a `SoundName` (explosion)
+with no call-site change.
+
+Mastering lives in `scripts/gen-weapon-sfx.sh`, not in the engine: length and
+level are baked into the files because this engine has no per-sound gain, and
+the table there is the actual weapon mix. Two things that had to be measured
+rather than guessed -- the MA40 sample is trimmed to 300ms because it fires
+every 100ms and a 0.8s sample stacks eight deep into mud, and generations open
+with up to 100ms of dead air (the first shotgun's bang landed at 0.10s), so
+every file gets `silenceremove` before the transient.
+
+Also fixed in passing: an unarmed beatdown was silent. Power melee emits a
+paired `shot` event, a bare melee only emits `melee_swing`, and nothing played
+that recipe.
+
+Supersedes the "announcer is Web Speech API because the key is missing" note
+below: `ELEVENLABS_API_KEY` is present in `.env` now and generation works.
+
 ## 2026-08-15: Halo Infinite weapon sandbox -- fixed spawn pair, two pad tiers
 
 The 11-weapon roster mimics Halo Infinite directly (MA40, MK50, BR75, VK78
@@ -37,6 +117,10 @@ typed to `WeaponId`, so putting equipment on pads is a schema change, not a
 tune. Deferred deliberately.
 
 ## 2026-08-15: Weapon pads are a human-facing layer for now
+
+SUPERSEDED 2026-08-17: no map carries pads any more (see the top entry). The
+placement doctrine below is kept because the pad code and the map-symmetry test
+still work off it, so it is what any future pad layout has to satisfy.
 
 All three maps carry the two-tier pad layout, and pad positions stay
 symmetric under each map's own transform (bastion/gutter rotate180, hairpin

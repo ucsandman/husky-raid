@@ -142,6 +142,47 @@ describe('Predictor', () => {
     expect(predicted.sliding).toEqual(reference.sliding)
   })
 
+  it('reconcile keeps `scoped` held when every input is already acked', () => {
+    // The ADS-zoom flicker: snapshots land at 20Hz, local input ticks at
+    // 30Hz, so reconcile regularly runs with an empty pending buffer (every
+    // input acked). A blanket `scoped = false` there un-scoped the player for
+    // the frames until the next input tick, and the camera FOV lerped toward
+    // hipfire and back ~20x/second. `scoped` is a pure function of the latest
+    // input, so the last locally-computed value IS the truth when there is
+    // nothing left to replay.
+    const predicted = makeTestPlayer()
+    const predictor = new Predictor(MAPS.gutter)
+    const inputs: PlayerInput[] = []
+
+    for (let i = 0; i < 10; i++) {
+      const input = makeInput({ seq: i, yaw: 0, ads: true })
+      inputs.push(input)
+      predictor.applyInput(predicted, input)
+    }
+    expect(predicted.scoped).toBe(true) // precondition: ADS was held the whole way
+
+    const server = makeTestPlayer()
+    for (const input of inputs) stepMovement(server, input, MAPS.gutter, input.dt)
+    predictor.reconcile(predicted, toSnapPlayer(server, 0), 9)
+
+    expect(predicted.scoped).toBe(true)
+  })
+
+  it('reconcile drops `scoped` for a dead player', () => {
+    // A corpse never replays movement (applyInput/reconcile both alive-gate
+    // stepMovement), so nothing else would clear a scope held at the moment
+    // of death -- the death cam would stay zoomed for the whole respawn wait.
+    const predicted = makeTestPlayer()
+    const predictor = new Predictor(MAPS.gutter)
+    predictor.applyInput(predicted, makeInput({ seq: 0, ads: true }))
+    expect(predicted.scoped).toBe(true)
+
+    const server = makeTestPlayer({ alive: false })
+    predictor.reconcile(predicted, toSnapPlayer(server, 0), 0)
+
+    expect(predicted.scoped).toBe(false)
+  })
+
   it('reconcile corrects divergence', () => {
     const predicted = makeTestPlayer()
     const predictor = new Predictor(MAPS.gutter)

@@ -12,6 +12,7 @@ Requires Python 3.8+ and Node.js >= 20 on PATH. Ctrl+C stops the server.
 import argparse
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -20,6 +21,35 @@ import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+
+def port_busy(port: int) -> bool:
+    with socket.socket() as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def listening_pid(port: int) -> str:
+    """Best-effort PID holding `port`; '' when it can't be determined. Only
+    feeds the error message, so a miss costs nothing."""
+    try:
+        if os.name == "nt":
+            out = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True)
+            for line in out.splitlines():
+                parts = line.split()
+                if (
+                    len(parts) >= 5
+                    and parts[-1].isdigit()
+                    and parts[-2] == "LISTENING"
+                    and parts[1].endswith(f":{port}")
+                ):
+                    return parts[-1]
+            return ""
+        return subprocess.check_output(
+            ["lsof", "-ti", f"tcp:{port}"], text=True
+        ).split()[0]
+    except (OSError, subprocess.CalledProcessError, IndexError):
+        return ""
 
 
 def run(cmd: list, **kwargs) -> None:
@@ -68,13 +98,37 @@ def main() -> int:
         print(f"error: Node.js >= 20 required, found v{node_major}.", file=sys.stderr)
         return 1
 
+    # Checked BEFORE anything is built or spawned: the readiness probe below is
+    # just an HTTP GET, so a server left running from an earlier session used to
+    # answer it and the launcher would report "running at ..." and open a browser
+    # while its own child died of EADDRINUSE -- on a stale build of the game.
+    if port_busy(args.port):
+        pid = listening_pid(args.port)
+        kill = f"taskkill /F /T /PID {pid}" if os.name == "nt" else f"kill {pid}"
+        print(
+            f"error: port {args.port} is already in use"
+            + (f" by PID {pid}" if pid else "")
+            + ".\n"
+            "       Usually a RIFTLANE server left running from an earlier session.\n"
+            "       It serves THAT session's code, so the game there is stale.\n"
+            + (f"  fix: {kill}\n" if pid else "")
+            + f"       or leave it alone: python launch.py --port {args.port + 1}",
+            file=sys.stderr,
+        )
+        return 1
+
     if not (ROOT / "node_modules").is_dir():
         run([npm, "install"])
 
-    # Rebuild when the built client is missing or older than any client/shared source.
+    # Rebuild when the built client is missing or older than any client/shared
+    # source. client/public counts: Vite copies it into dist verbatim, so a new
+    # asset (a weapon SFX file, the SFX audition page) is a stale build too.
     dist_index = ROOT / "client" / "dist" / "index.html"
     sources = newest_mtime(
-        ROOT / "client" / "src", ROOT / "client" / "index.html", ROOT / "shared" / "src"
+        ROOT / "client" / "src",
+        ROOT / "client" / "public",
+        ROOT / "client" / "index.html",
+        ROOT / "shared" / "src",
     )
     if args.rebuild or not dist_index.is_file() or dist_index.stat().st_mtime < sources:
         run([npm, "run", "build"])

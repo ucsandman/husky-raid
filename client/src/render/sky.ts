@@ -65,10 +65,19 @@ function hash(n: number): number {
 
 /**
  * Backdrop layers drawn before everything else: a gradient dome, two star
- * shells and a warm horizon band. All three opt out of fog and depth so the
- * dome can sit inside camera.far without ever clipping world geometry, and
- * the whole group is static -- the arena is ~60m across against a 420m dome,
- * so parallax from player movement is below a pixel.
+ * shells and a warm horizon band. All four opt out of fog, and the whole
+ * group is static -- the arena is ~60m across against a 420m dome, so
+ * parallax from player movement is below a pixel.
+ *
+ * DEPTH: only the DOME may skip the depth test. It is opaque and drawn first
+ * (renderOrder -3), so skipping depth just lets it fill the background before
+ * the world lands on top. The stars and the horizon band are TRANSPARENT,
+ * which puts them in a queue that runs after all opaque geometry -- with
+ * depthTest off they painted straight over arena walls, the bases and the
+ * floor, so the whole map looked like it was dusted with stars and washed
+ * with an orange band. They keep depthTest on and sit at radius 400/394,
+ * comfortably inside camera.far (500), so the depth buffer occludes them for
+ * free. Do not "restore" depthTest:false here.
  */
 export function buildSky(dotTexture: THREE.Texture): THREE.Group {
   const group = new THREE.Group()
@@ -103,7 +112,6 @@ export function buildSky(dotTexture: THREE.Texture): THREE.Group {
       transparent: true,
       opacity: 0.75,
       depthWrite: false,
-      depthTest: false,
       blending: THREE.AdditiveBlending,
       fog: false,
     })
@@ -122,7 +130,6 @@ export function buildSky(dotTexture: THREE.Texture): THREE.Group {
       transparent: true,
       opacity: 0.9,
       depthWrite: false,
-      depthTest: false,
       blending: THREE.AdditiveBlending,
       fog: false,
     })
@@ -139,7 +146,6 @@ export function buildSky(dotTexture: THREE.Texture): THREE.Group {
     opacity: 0.5,
     side: THREE.BackSide,
     depthWrite: false,
-    depthTest: false,
     blending: THREE.AdditiveBlending,
     fog: false,
   })

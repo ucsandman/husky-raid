@@ -92,10 +92,15 @@ export function boundsOf(boxes: AABB[]): Bounds {
 // ---- flag beacon ------------------------------------------------------------
 
 /**
- * The arena's primary navigation landmark: a raised drum with three claw
- * arms, a floating team core, and a 26m additive light pillar that stays
- * visible from anywhere on the map. `pillar`/`halo`/`core` are tagged for
- * effects.tickMapPulse, which owns the shimmer animation.
+ * The flag stand: a raised drum with three claw arms, a pulsing rim and a
+ * ground halo. The flag itself is NOT built here -- it has to leave the stand
+ * when it is dropped or carried, so mapMesh.ts adds it as a sibling and
+ * flag.ts positions it from the snapshot every frame.
+ *
+ * This used to be the arena's landmark in its own right (see the note inside
+ * about the core and pillar that were removed); it is now the plinth the
+ * landmark stands in. `rim`/`halo` are tagged for effects.tickMapPulse, which
+ * owns the pulse and shimmer animation.
  */
 export function makeFlagBeacon(lib: MaterialLibrary, pos: Vec3, team: Team): THREE.Group {
   const group = new THREE.Group()
@@ -136,19 +141,13 @@ export function makeFlagBeacon(lib: MaterialLibrary, pos: Vec3, team: Team): THR
     group.add(rim)
   }
 
-  const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.42, 0), lib.teamGlow(team))
-  core.position.y = 1.55
-  core.userData.spin = 0.9
-  core.userData.bob = 0.16
-  core.userData.bobBase = 1.55
-  group.add(core)
-
-  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.62, 26, 10, 1, true), freshAdditive(glow, 0.085))
-  pillar.position.y = 13.5
-  pillar.userData.shimmer = 1
-  pillar.renderOrder = 4
-  group.add(pillar)
-
+  // The floating core and the 26m light pillar that used to live here are
+  // gone. They existed because there was no actual flag to look at: the stand
+  // had to BE the landmark. Now flag.ts plants a mast and a banner in this
+  // drum, and the old pair fought it -- a spinning crystal hovered in front of
+  // the cloth, and two concentric additive columns (the pillar plus the flag's
+  // own locator shaft) washed the whole base area pale. The drum, claw arms,
+  // pulsing rim and ground halo stay: this is the plinth, not the beacon.
   const halo = new THREE.Mesh(new THREE.RingGeometry(1.75, 2.1, 24), freshAdditive(glow, 0.16))
   halo.rotation.x = -Math.PI / 2
   halo.position.y = 0.06

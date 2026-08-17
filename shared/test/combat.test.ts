@@ -24,7 +24,7 @@ import {
   ADS_MOVE_MULT,
   MELEE_DAMAGE,
 } from '../src/constants'
-import { WEAPONS, WEAPON_POOL, SPAWN_WEAPONS, rollLoadout } from '../src/weapons'
+import { WEAPONS, WEAPON_POOL, rollLoadout } from '../src/weapons'
 import {
   applyDamage,
   tickShield,
@@ -92,20 +92,21 @@ describe('tickShield', () => {
 })
 
 describe('rollLoadout', () => {
-  it('gives every life the same utility pair; only equipment is rolled', () => {
-    // Halo has no loadouts. The weapon slots no longer consume rand() at
-    // all -- the single remaining draw is equipment.
-    const loadout = rollLoadout(seqRand([0]))
-    expect(loadout.weapons).toEqual(SPAWN_WEAPONS)
+  it('draws both weapons then equipment, in that rand() order', () => {
+    // Three draws per life: slot 0 out of the whole pool, slot 1 out of the
+    // pool minus that pick, then equipment.
+    const loadout = rollLoadout(seqRand([0, 0, 0]))
+    expect(loadout.weapons).toEqual([WEAPON_POOL[0], WEAPON_POOL[1]])
     expect(loadout.grenades).toEqual({ frag: 2, mag: 0 })
     expect(loadout.equipment).toBe('grapple')
 
-    const loadout2 = rollLoadout(seqRand([0.95]))
-    expect(loadout2.weapons).toEqual(SPAWN_WEAPONS)
+    const loadout2 = rollLoadout(seqRand([0.999, 0.999, 0.95]))
+    expect(loadout2.weapons).toEqual([WEAPON_POOL[WEAPON_POOL.length - 1], WEAPON_POOL[WEAPON_POOL.length - 2]])
     expect(loadout2.equipment).toBe('camo')
   })
 
-  it('200 seeded rolls: always the same two guns, never a power melee, never null equipment', () => {
+  it('200 seeded rolls: two real, distinct weapons and never null equipment', () => {
+    const seen = new Set<string>()
     for (let trial = 0; trial < 200; trial++) {
       let seed = trial * 7 + 1
       const prand = (): number => {
@@ -113,14 +114,14 @@ describe('rollLoadout', () => {
         return (seed % 10000) / 10000
       }
       const lo = rollLoadout(prand)
-      expect(lo.weapons).toEqual(SPAWN_WEAPONS)
-      // The pair must stay two usable guns: a spawn that cannot answer at
-      // range is what the old random roll kept handing bots.
-      expect(WEAPONS[lo.weapons[0]].kind).not.toBe('power_melee')
-      expect(WEAPONS[lo.weapons[1]].kind).not.toBe('power_melee')
+      expect(WEAPONS[lo.weapons[0]], `slot 0 ${lo.weapons[0]}`).toBeDefined()
+      expect(WEAPONS[lo.weapons[1]], `slot 1 ${lo.weapons[1]}`).toBeDefined()
       expect(lo.weapons[0]).not.toBe(lo.weapons[1])
       expect(lo.equipment).not.toBe(null)
+      lo.weapons.forEach((w) => seen.add(w))
     }
+    // The roll really is random over the whole roster, not a fixed pair.
+    expect(seen.size).toBe(WEAPON_POOL.length)
   })
 
   it('every weapon fires on a whole number of ticks', () => {
